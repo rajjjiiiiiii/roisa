@@ -5,8 +5,10 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <numeric>
+#include <set>
 #include <stdexcept>
 
 // ITK I/O
@@ -22,6 +24,13 @@
 #include <itkLinearInterpolateImageFunction.h>
 #include <itkNearestNeighborInterpolateImageFunction.h>
 #include <itkResampleImageFilter.h>
+
+// ITK registration
+#include <itkCenteredTransformInitializer.h>
+#include <itkEuler3DTransform.h>
+#include <itkImageRegistrationMethodv4.h>
+#include <itkMeanSquaresImageToImageMetricv4.h>
+#include <itkRegularStepGradientDescentOptimizerv4.h>
 
 namespace fs = std::filesystem;
 
@@ -47,14 +56,16 @@ int ROIVolume::nz() const
 
 // ── Load ──────────────────────────────────────────────────────────────────────
 
-bool ROIVolume::load(const std::string& path)
+bool ROIVolume::load(const std::string& path, const std::string& seriesUID)
 {
     try {
         FloatPtr raw;
         if (fs::is_directory(path))
-            raw = loadDicomSeries(path);
-        else
+            raw = loadDicomSeries(path, seriesUID);
+        else {
+            m_firstDicomFile.clear();
             raw = loadNiftiOrMeta(path);
+        }
 
         if (!raw) return false;
 
@@ -86,9 +97,9 @@ ROIVolume::FloatPtr ROIVolume::loadNiftiOrMeta(const std::string& path)
     return reader->GetOutput();
 }
 
-ROIVolume::FloatPtr ROIVolume::loadDicomSeries(const std::string& dir)
+ROIVolume::FloatPtr ROIVolume::loadDicomSeries(const std::string& dir,
+                                               const std::string& uid)
 {
-    // Detect GDCM series IDs
     auto nameGen = itk::GDCMSeriesFileNames::New();
     nameGen->SetUseSeriesDetails(true);
     nameGen->SetDirectory(dir);
@@ -97,8 +108,15 @@ ROIVolume::FloatPtr ROIVolume::loadDicomSeries(const std::string& dir)
     if (seriesIds.empty())
         throw std::runtime_error("No DICOM series found in: " + dir);
 
-    auto fileNames = nameGen->GetFileNames(seriesIds.front());
-    std::cout << "  DICOM: series " << seriesIds.front()
+    // Pick the requested UID; fall back to first series if not found
+    std::string chosenUID = uid;
+    if (chosenUID.empty() ||
+        std::find(seriesIds.begin(), seriesIds.end(), chosenUID) == seriesIds.end())
+        chosenUID = seriesIds.front();
+
+    auto fileNames = nameGen->GetFileNames(chosenUID);
+    m_firstDicomFile = fileNames.empty() ? "" : fileNames.front();
+    std::cout << "  DICOM: series " << chosenUID
               << "  (" << fileNames.size() << " slices)\n";
 
     // Read as short, then cast to float
@@ -241,6 +259,60 @@ ROIVolume::FloatPtr ROIVolume::resampleIsotropic(FloatPtr img, int targetSize)
     resample->SetDefaultPixelValue(0.0f);
     resample->Update();
     return resample->GetOutput();
+}
+
+// ── Public isotropic resampling ───────────────────────────────────────────────
+
+bool ROIVolume::resampleToIsotropicSpacing(float spacingMm)
+{
+    if (!m_origImg) return false;
+    try {
+        auto origSpacing = m_origImg->GetSpacing();
+        auto origSize    = m_origImg->GetLargestPossibleRegion().GetSize();
+
+        if (spacingMm <= 0.f) {
+            spacingMm = static_cast<float>(
+                std::min({origSpacing[0], origSpacing[1], origSpacing[2]}));
+            if (spacingMm <= 0.f) spacingMm = 1.f;
+        }
+
+        FloatImage3::SpacingType newSpacing;
+        newSpacing.Fill(spacingMm);
+
+        FloatImage3::SizeType newSize;
+        for (unsigned i = 0; i < 3; ++i)
+            newSize[i] = static_cast<itk::SizeValueType>(
+                std::max(1.0, std::ceil(origSize[i] * origSpacing[i] / spacingMm)));
+
+        using LinearInterp = itk::LinearInterpolateImageFunction<FloatImage3, double>;
+        using IdentityTx   = itk::IdentityTransform<double, 3>;
+        using Resample     = itk::ResampleImageFilter<FloatImage3, FloatImage3>;
+
+        auto resample = Resample::New();
+        resample->SetInput(m_origImg);
+        resample->SetTransform(IdentityTx::New());
+        resample->SetInterpolator(LinearInterp::New());
+        resample->SetOutputOrigin(m_origImg->GetOrigin());
+        resample->SetOutputSpacing(newSpacing);
+        resample->SetOutputDirection(m_origImg->GetDirection());
+        resample->SetSize(newSize);
+        resample->SetDefaultPixelValue(0.0f);
+        resample->Update();
+
+        m_displayImg = resample->GetOutput();
+        m_mask       = createMask(m_displayImg);
+        m_history.clear();
+        computeWindow();
+
+        auto sz = m_displayImg->GetLargestPossibleRegion().GetSize();
+        std::cout << "  Resampled to isotropic " << spacingMm << " mm: "
+                  << sz[0] << " x " << sz[1] << " x " << sz[2] << "\n";
+        return true;
+    }
+    catch (const std::exception& e) {
+        std::cerr << "ROIVolume::resampleToIsotropicSpacing error: " << e.what() << "\n";
+        return false;
+    }
 }
 
 ROIVolume::Int16Ptr ROIVolume::createMask(FloatPtr ref)
@@ -497,4 +569,289 @@ bool ROIVolume::undo()
 void ROIVolume::notifyChange()
 {
     if (m_onChange) m_onChange();
+}
+
+// ── Reset window ──────────────────────────────────────────────────────────────
+
+void ROIVolume::resetWindow()
+{
+    computeWindow();
+    notifyChange();
+}
+
+// ── Spacing ───────────────────────────────────────────────────────────────────
+
+double ROIVolume::voxelSpacingMm() const
+{
+    if (!m_displayImg) return 1.0;
+    return m_displayImg->GetSpacing()[0];
+}
+
+// ── Label statistics ──────────────────────────────────────────────────────────
+
+ROIVolume::LabelStats ROIVolume::computeStats(int label) const
+{
+    LabelStats s;
+    s.label = label;
+    if (!m_displayImg || !m_mask) return s;
+
+    double sp = voxelSpacingMm();
+    const float*   ibuf = m_displayImg->GetBufferPointer();
+    const int16_t* mbuf = m_mask->GetBufferPointer();
+    int NX = nx(), NY = ny(), NZ = nz();
+
+    s.bboxX0 = NX; s.bboxY0 = NY; s.bboxZ0 = NZ;
+    s.bboxX1 = -1; s.bboxY1 = -1; s.bboxZ1 = -1;
+
+    double sumI = 0, sumI2 = 0;
+    for (int z = 0; z < NZ; ++z)
+      for (int y = 0; y < NY; ++y)
+        for (int x = 0; x < NX; ++x) {
+            int lin = linearIdx(x, y, z, NX, NY);
+            if (mbuf[lin] == static_cast<int16_t>(label)) {
+                ++s.voxelCount;
+                float v = ibuf[lin];
+                sumI  += v;
+                sumI2 += v * v;
+                s.bboxX0 = std::min(s.bboxX0, x);
+                s.bboxY0 = std::min(s.bboxY0, y);
+                s.bboxZ0 = std::min(s.bboxZ0, z);
+                s.bboxX1 = std::max(s.bboxX1, x);
+                s.bboxY1 = std::max(s.bboxY1, y);
+                s.bboxZ1 = std::max(s.bboxZ1, z);
+            }
+        }
+
+    if (s.voxelCount > 0) {
+        s.volumeMm3      = s.voxelCount * sp * sp * sp;
+        double mean      = sumI / s.voxelCount;
+        s.meanIntensity  = float(mean);
+        double var       = sumI2 / s.voxelCount - mean * mean;
+        s.stdIntensity   = float(std::sqrt(std::max(0.0, var)));
+    }
+    return s;
+}
+
+std::vector<ROIVolume::LabelStats> ROIVolume::computeAllStats() const
+{
+    std::vector<LabelStats> result;
+    if (!m_mask) return result;
+    const int16_t* buf = m_mask->GetBufferPointer();
+    int total = nx() * ny() * nz();
+    std::set<int16_t> labels;
+    for (int i = 0; i < total; ++i)
+        if (buf[i] > 0) labels.insert(buf[i]);
+    for (int16_t lbl : labels)
+        result.push_back(computeStats(lbl));
+    return result;
+}
+
+std::array<double,3> ROIVolume::labelCentroid(int label) const
+{
+    if (!m_mask) return {0.0, 0.0, 0.0};
+    const int16_t* buf = m_mask->GetBufferPointer();
+    int NX = nx(), NY = ny(), NZ = nz();
+    double sx = 0, sy = 0, sz = 0;
+    int n = 0;
+    for (int z = 0; z < NZ; ++z)
+      for (int y = 0; y < NY; ++y)
+        for (int x = 0; x < NX; ++x) {
+            if (buf[linearIdx(x, y, z, NX, NY)] == static_cast<int16_t>(label)) {
+                sx += x; sy += y; sz += z; ++n;
+            }
+        }
+    if (n == 0) return {NX/2.0, NY/2.0, NZ/2.0};
+    return {sx/n, sy/n, sz/n};
+}
+
+// ── Slice propagation ─────────────────────────────────────────────────────────
+
+int ROIVolume::propagateLabel(int label, int axis, int axisIdx, int direction)
+{
+    if (!m_mask) return -1;
+    int NX = nx(), NY = ny(), NZ = nz();
+    int targetIdx = axisIdx + direction;
+    int maxIdx = (axis == 0 ? NX : axis == 1 ? NY : NZ) - 1;
+    if (targetIdx < 0 || targetIdx > maxIdx) return 0;
+
+    int16_t* buf = m_mask->GetBufferPointer();
+    std::vector<std::array<int,3>> changed;
+    std::vector<int16_t>           oldVals;
+
+    auto trySet = [&](int tx, int ty, int tz) {
+        int lin = linearIdx(tx, ty, tz, NX, NY);
+        if (buf[lin] != static_cast<int16_t>(label)) {
+            changed.push_back({tx, ty, tz});
+            oldVals.push_back(buf[lin]);
+            buf[lin] = static_cast<int16_t>(label);
+        }
+    };
+
+    if (axis == 0) {
+        for (int z = 0; z < NZ; ++z)
+          for (int y = 0; y < NY; ++y)
+            if (buf[linearIdx(axisIdx, y, z, NX, NY)] == static_cast<int16_t>(label))
+                trySet(targetIdx, y, z);
+    } else if (axis == 1) {
+        for (int z = 0; z < NZ; ++z)
+          for (int x = 0; x < NX; ++x)
+            if (buf[linearIdx(x, axisIdx, z, NX, NY)] == static_cast<int16_t>(label))
+                trySet(x, targetIdx, z);
+    } else {
+        for (int y = 0; y < NY; ++y)
+          for (int x = 0; x < NX; ++x)
+            if (buf[linearIdx(x, y, axisIdx, NX, NY)] == static_cast<int16_t>(label))
+                trySet(x, y, targetIdx);
+    }
+
+    if (!changed.empty())
+        pushUndo(std::move(changed), std::move(oldVals));
+    notifyChange();
+    return static_cast<int>(changed.size());
+}
+
+// ── CSV export ────────────────────────────────────────────────────────────────
+
+bool ROIVolume::exportStatsCSV(const std::string& path) const
+{
+    auto stats = computeAllStats();
+    std::ofstream f(path);
+    if (!f) return false;
+    f << "Label,VoxelCount,VolumeMm3,MeanIntensity,StdIntensity,"
+         "BBoxX0,BBoxY0,BBoxZ0,BBoxX1,BBoxY1,BBoxZ1\n";
+    for (auto& s : stats) {
+        f << s.label      << ","
+          << s.voxelCount << ","
+          << s.volumeMm3  << ","
+          << s.meanIntensity << ","
+          << s.stdIntensity  << ","
+          << s.bboxX0 << "," << s.bboxY0 << "," << s.bboxZ0 << ","
+          << s.bboxX1 << "," << s.bboxY1 << "," << s.bboxZ1 << "\n";
+    }
+    return true;
+}
+
+// ── Orientation labels ────────────────────────────────────────────────────────
+
+std::array<std::string,4> ROIVolume::sliceOrientLabels(int axis) const
+{
+    if (!m_displayImg) return {"","","",""};
+
+    // ITK direction matrix: dir[physRow][voxCol]
+    // physRow: 0=L(left+), 1=P(post+), 2=S(sup+) in LPS convention
+    auto dir = m_displayImg->GetDirection();
+
+    // Which voxel axes span this slice view?
+    //   axis 0 (sag, x=const):  rows = vox-Y(1), cols = vox-Z(2)
+    //   axis 1 (cor, y=const):  rows = vox-X(0), cols = vox-Z(2)
+    //   axis 2 (axi, z=const):  rows = vox-X(0), cols = vox-Y(1)
+    int rowVox = (axis == 0) ? 1 : 0;
+    int colVox = (axis == 2) ? 1 : 2;
+
+    auto dominant = [&](int voxAxis, bool positive) -> std::string {
+        double l = dir[0][voxAxis];
+        double p = dir[1][voxAxis];
+        double s = dir[2][voxAxis];
+        double al = std::abs(l), ap = std::abs(p), as_ = std::abs(s);
+        char c;
+        if      (al >= ap && al >= as_) c = (l > 0) ? 'L' : 'R';
+        else if (ap >= al && ap >= as_) c = (p > 0) ? 'P' : 'A';
+        else                            c = (s > 0) ? 'S' : 'I';
+        if (!positive) {
+            static const char flip[] = "RLPASI";
+            static const char orig[] = "LRAPIS";  // unused — manual flip:
+            if      (c=='L') c='R'; else if (c=='R') c='L';
+            else if (c=='P') c='A'; else if (c=='A') c='P';
+            else if (c=='S') c='I'; else if (c=='I') c='S';
+        }
+        return std::string(1, c);
+    };
+
+    // rows go top→bottom = +rowVox direction; top = negative rowVox
+    // cols go left→right = +colVox direction; left = negative colVox
+    return {
+        dominant(rowVox, false),   // top
+        dominant(rowVox, true),    // bottom
+        dominant(colVox, false),   // left
+        dominant(colVox, true)     // right
+    };
+}
+
+// ── Image registration ────────────────────────────────────────────────────────
+
+bool ROIVolume::loadRegisteredImage(const std::string& movingPath)
+{
+    if (!m_origImg) return false;
+    try {
+        // Load moving image
+        FloatPtr moving;
+        if (fs::is_directory(movingPath))
+            moving = loadDicomSeries(movingPath);
+        else
+            moving = loadNiftiOrMeta(movingPath);
+        if (!moving) return false;
+
+        std::cout << "  Registration: aligning moving image to fixed...\n";
+
+        using TxType    = itk::Euler3DTransform<double>;
+        using MetricType = itk::MeanSquaresImageToImageMetricv4<FloatImage3, FloatImage3>;
+        using OptimizerType = itk::RegularStepGradientDescentOptimizerv4<double>;
+        using RegistrationType = itk::ImageRegistrationMethodv4<FloatImage3, FloatImage3, TxType>;
+        using InitializerType  = itk::CenteredTransformInitializer<TxType, FloatImage3, FloatImage3>;
+
+        auto metric      = MetricType::New();
+        auto optimizer   = OptimizerType::New();
+        auto registration = RegistrationType::New();
+
+        auto tx = TxType::New();
+        auto initializer = InitializerType::New();
+        initializer->SetTransform(tx);
+        initializer->SetFixedImage(m_origImg);
+        initializer->SetMovingImage(moving);
+        initializer->MomentsOn();
+        initializer->InitializeTransform();
+
+        optimizer->SetLearningRate(0.1);
+        optimizer->SetMinimumStepLength(1e-6);
+        optimizer->SetNumberOfIterations(200);
+        optimizer->SetRelaxationFactor(0.5);
+
+        registration->SetMetric(metric);
+        registration->SetOptimizer(optimizer);
+        registration->SetInitialTransform(tx);
+        registration->SetFixedImage(m_origImg);
+        registration->SetMovingImage(moving);
+
+        RegistrationType::ShrinkFactorsArrayType shrinkFactors(2);
+        shrinkFactors[0] = 4; shrinkFactors[1] = 2;
+        RegistrationType::SmoothingSigmasArrayType smoothSigmas(2);
+        smoothSigmas[0] = 2.0; smoothSigmas[1] = 1.0;
+        registration->SetNumberOfLevels(2);
+        registration->SetShrinkFactorsPerLevel(shrinkFactors);
+        registration->SetSmoothingSigmasPerLevel(smoothSigmas);
+        registration->Update();
+
+        // Resample moving → fixed space
+        using NNInterp  = itk::NearestNeighborInterpolateImageFunction<FloatImage3, double>;
+        using ResampleF = itk::ResampleImageFilter<FloatImage3, FloatImage3>;
+        auto resample = ResampleF::New();
+        resample->SetInput(moving);
+        resample->SetTransform(registration->GetModifiableTransform());
+        resample->SetReferenceImage(m_origImg);
+        resample->UseReferenceImageOn();
+        resample->SetInterpolator(itk::LinearInterpolateImageFunction<FloatImage3,double>::New());
+        resample->SetDefaultPixelValue(0.f);
+        resample->Update();
+
+        // Replace display image (keep mask)
+        m_displayImg = resampleIsotropic(resample->GetOutput(), TARGET_SIZE);
+        computeWindow();
+        std::cout << "  Registration complete.\n";
+        notifyChange();
+        return true;
+    }
+    catch (const std::exception& e) {
+        std::cerr << "loadRegisteredImage error: " << e.what() << "\n";
+        return false;
+    }
 }

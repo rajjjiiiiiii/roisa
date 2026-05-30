@@ -1,9 +1,12 @@
 #pragma once
-// SliceView.h — Single orthogonal slice panel with mask overlay and mouse input
+// SliceView.h — Single orthogonal slice panel with zoom, pan, colormap,
+//               orientation labels, W/L drag, label visibility, interpolation,
+//               and measurement overlay (ruler, angle, circle area).
 
 #include <QWidget>
 #include <array>
 #include <cstdint>
+#include <map>
 #include <vector>
 
 #include "../core/ROIVolume.h"
@@ -13,9 +16,23 @@ class SliceView : public QWidget
     Q_OBJECT
 
 public:
-    // axis: 0 = sagittal (x = const)
-    //       1 = coronal  (y = const)
-    //       2 = axial    (z = const)
+    enum Colormap { GRAY=0, HOT=1, COOL=2, VIRIDIS=3 };
+
+    // ── Measurement types ──────────────────────────────────────────────────────
+    enum class MeasureMode { None=0, Ruler=1, Angle=2, Circle=3 };
+
+    /// A point in normalised slice image coordinates [0,1]×[0,1].
+    struct MeasurePt { float u{0.f}, v{0.f}; };
+
+    /// One completed (or in-progress) measurement.
+    struct Measurement {
+        MeasureMode type    {MeasureMode::Ruler};
+        int         sliceIdx{0};
+        std::vector<MeasurePt> pts;   // Ruler:2, Angle:3, Circle:2(centre+edge)
+        bool        complete{false};
+        QString     valueStr;          // "12.3 mm", "45.2°", "78.5 mm²"
+    };
+
     explicit SliceView(int axis, QWidget* parent = nullptr);
 
     void setVolume(ROIVolume* vol);
@@ -23,17 +40,29 @@ public:
     int  sliceIndex() const { return m_sliceIdx; }
     int  axis()       const { return m_axis; }
 
-    // Crosshair coords in the other two dimensions:
-    //   axis 0 (sag): a = y, b = z
-    //   axis 1 (cor): a = x, b = z
-    //   axis 2 (axi): a = x, b = y
+    // Crosshair coords in the other two dimensions
     void setCrosshair(int a, int b);
+
+    // ── Display options ────────────────────────────────────────────────────────
+    void setInterpolate(bool on)       { m_interpolate = on; update(); }
+    void setColormap(int cm)           { m_colormap = cm; update(); }
+    void setOverlayAlpha(float alpha)  { m_overlayAlpha = alpha; update(); }
+    void setLabelVisible(int lbl, bool v)  { if(lbl>=0&&lbl<256) { m_labelVis[lbl]=v; update(); } }
+    void setAllLabelsVisible(bool v)   { m_labelVis.fill(v); update(); }
+    void setShowInfoOverlay(bool on)   { m_showInfoOverlay = on; update(); }
+    void resetZoom();
+
+    // ── Measurement API ────────────────────────────────────────────────────────
+    void setMeasureMode(MeasureMode mode);
+    void clearMeasurements();
+    const std::vector<Measurement>& measurementsForSlice(int idx) const;
 
 signals:
     void sliceClicked (int x, int y, int z);
     void sliceDragged (int x, int y, int z);
     void sliceReleased();
-    void scrolled(int delta);   // mouse wheel step
+    void scrolled(int delta);
+    void measurementAdded(QString description);
 
 protected:
     void paintEvent       (QPaintEvent*)  override;
@@ -47,17 +76,55 @@ private:
     int        m_axis;
     int        m_sliceIdx{0};
     int        m_crossA{0}, m_crossB{0};
-    bool       m_dragging{false};
+
+    // ── Measurement state ──────────────────────────────────────────────────────
+    MeasureMode  m_measureMode{MeasureMode::None};
+    std::map<int, std::vector<Measurement>> m_measurements; // keyed by sliceIdx
+    Measurement  m_pending;      // in-progress measurement
+    bool         m_measPending{false};
+    MeasurePt    m_measCursor;   // live cursor position for preview
+
+    QPointF  widgetToNorm(QPointF w) const;
+    QPointF  normToWidget(QPointF n) const;
+    float    normDistMm(MeasurePt a, MeasurePt b) const;
+    void     computeMeasureValue(Measurement& m) const;
+    void     paintMeasurements(QPainter& p) const;
+
+    // Left-button drag (paint/segment)
+    bool m_leftDragging{false};
+
+    // Middle/right drag for pan and W/L
+    bool m_midDragging{false};
+    int  m_midStartX{0}, m_midStartY{0};
+    int  m_panStartX{0}, m_panStartY{0};
+
+    bool  m_rightDragging{false};
+    int   m_rightStartX{0}, m_rightStartY{0};
+    float m_dragStartVmin{0.f}, m_dragStartVmax{0.f};
+
+    // Zoom / pan state
+    double m_scale{1.0};
+    int    m_panX{0}, m_panY{0};
+
+    // Display options
+    bool  m_interpolate{false};
+    int   m_colormap{GRAY};
+    float m_overlayAlpha{1.0f};
+    bool  m_showInfoOverlay{true};
+    std::array<bool,256> m_labelVis;   // label 0..255 visibility
 
     mutable std::vector<float>   m_intensityBuf;
     mutable std::vector<int16_t> m_maskBuf;
 
-    // Return the letterboxed image rect within this widget
+    // Return the letterboxed+zoomed image rect within this widget
     QRect imageRect() const;
 
-    // Map widget pixel (wx,wy) → display-space (vx,vy,vz); false if outside
+    // Map widget pixel → display-space voxel; false if outside
     bool widgetToVoxel(int wx, int wy, int& vx, int& vy, int& vz) const;
 
-    // Cycled RGBA colour for label index (matches Python _make_label_colors)
+    // Apply colormap to a normalised [0,1] value → RGB
+    static void applyColormap(int cm, float t, int& r, int& g, int& b);
+
+    // Cycled RGBA colour for label index
     static std::array<uint8_t,4> labelColor(int label);
 };

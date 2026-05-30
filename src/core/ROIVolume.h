@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -36,7 +37,11 @@ public:
 
     /// Load NIfTI (.nii / .nii.gz) or a DICOM folder.
     /// Resamples to isotropic TARGET_SIZE for display.
-    bool load(const std::string& path);
+    /// seriesUID selects a specific DICOM series when the folder has several.
+    bool load(const std::string& path, const std::string& seriesUID = "");
+
+    /// Path of the first DICOM file used during the last load (empty for NIfTI).
+    const std::string& firstDicomFile() const { return m_firstDicomFile; }
 
     /// Resample mask back to original image space and write as NIfTI.
     bool saveMask(const std::string& outPath) const;
@@ -54,7 +59,47 @@ public:
     // ── Intensity window ──────────────────────────────────────────────────────
     float vmin() const { return m_vmin; }
     float vmax() const { return m_vmax; }
-    void  setWindow(float vmin, float vmax) { m_vmin = vmin; m_vmax = vmax; }
+    void  setWindow(float lo, float hi) { m_vmin = lo; m_vmax = hi; }
+    void  resetWindow();   // recompute from 1%/99% percentiles + notifyChange
+
+    // ── Spacing ───────────────────────────────────────────────────────────────
+    double voxelSpacingMm() const;   // isotropic spacing of display volume
+
+    // ── Label statistics ──────────────────────────────────────────────────────
+    struct LabelStats {
+        int    label{0};
+        int    voxelCount{0};
+        double volumeMm3{0.0};
+        float  meanIntensity{0.f};
+        float  stdIntensity{0.f};
+        int    bboxX0{0}, bboxY0{0}, bboxZ0{0};
+        int    bboxX1{-1}, bboxY1{-1}, bboxZ1{-1};
+    };
+    LabelStats              computeStats(int label) const;
+    std::vector<LabelStats> computeAllStats() const;
+    std::array<double,3>    labelCentroid(int label) const;
+
+    // ── Slice propagation ─────────────────────────────────────────────────────
+    /// Copy label from axisIdx to axisIdx+direction (clamped). Returns voxels set.
+    int propagateLabel(int label, int axis, int axisIdx, int direction);
+
+    // ── CSV export ────────────────────────────────────────────────────────────
+    bool exportStatsCSV(const std::string& path) const;
+
+    // ── Orientation labels ────────────────────────────────────────────────────
+    /// {top, bottom, left, right} anatomical labels for a slice view axis.
+    std::array<std::string,4> sliceOrientLabels(int axis) const;
+
+    // ── Isotropic resampling ──────────────────────────────────────────────────
+    /// Re-sample the original image to isotropic voxels at spacingMm
+    /// (0 = auto: use minimum original spacing).  Replaces the display image
+    /// and resets the mask.  Recommended before VTK volume rendering.
+    bool resampleToIsotropicSpacing(float spacingMm = 0.f);
+
+    // ── Image registration ────────────────────────────────────────────────────
+    /// Rigid-register movingPath to current image; replace display volume.
+    /// The mask is preserved. Returns false on error.
+    bool loadRegisteredImage(const std::string& movingPath);
 
     // ── Voxel access (display space, x/y/z indexing) ──────────────────────────
     float   getIntensity(int x, int y, int z) const;
@@ -113,15 +158,16 @@ private:
     FloatPtr m_displayImg;   // float32, isotropically resampled to TARGET_SIZE
     Int16Ptr m_mask;         // int16, same grid as m_displayImg
 
-    float m_vmin{0.f};
-    float m_vmax{1.f};
+    float       m_vmin{0.f};
+    float       m_vmax{1.f};
+    std::string m_firstDicomFile;
 
     std::deque<UndoEntry>  m_history;
     std::function<void()>  m_onChange;
 
     // Internal helpers
     FloatPtr loadNiftiOrMeta(const std::string& path);
-    FloatPtr loadDicomSeries(const std::string& dir);
+    FloatPtr loadDicomSeries(const std::string& dir, const std::string& uid = "");
     FloatPtr resampleIsotropic(FloatPtr img, int targetSize);
     Int16Ptr createMask(FloatPtr ref);     // zero-filled, same grid as ref
     Int16Ptr resampleMaskToRef(Int16Ptr mask, FloatPtr ref); // NN interp

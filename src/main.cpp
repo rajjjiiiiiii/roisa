@@ -2,10 +2,20 @@
 
 #include <QApplication>
 #include <QStyleFactory>
+#include <QSurfaceFormat>
 #include "gui/MainWindow.h"
+
+#ifdef ROISA_USE_VTK
+#  include <QVTKOpenGLNativeWidget.h>
+#endif
 
 int main(int argc, char* argv[])
 {
+    // VTK requires a specific OpenGL surface format set BEFORE QApplication.
+#ifdef ROISA_USE_VTK
+    QSurfaceFormat::setDefaultFormat(QVTKOpenGLNativeWidget::defaultFormat());
+#endif
+
     QApplication app(argc, argv);
     app.setApplicationName("ROISA");
     app.setApplicationVersion("1.0.0");

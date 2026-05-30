@@ -7,7 +7,9 @@
 class QComboBox; class QSpinBox; class QDoubleSpinBox;
 class QCheckBox; class QSlider; class QPushButton;
 class QLineEdit; class QLabel; class QStackedWidget;
-class QGroupBox;
+class QGroupBox; class QTableWidget; class QTabWidget;
+class HistogramWidget;
+class DicomTagWidget;
 class ROIVolume; class OrthoViewer;
 
 class ToolPanel : public QWidget
@@ -26,6 +28,10 @@ public:
     int  brushRadius() const;
     int  brushShape()  const;   // 0=sphere 1=cylinder 2=cube
     bool twoDOnly()    const;
+
+    // Called by MainWindow after mask changes
+    void refreshStats();
+    void onVolumeLoaded();
 
 signals:
     void refreshRequested();
@@ -46,6 +52,15 @@ private slots:
     void onNavXChanged(int x);
     void onNavYChanged(int y);
     void onNavZChanged(int z);
+    void onPropagateLabel(int direction);
+    void onSnapToCentroid();
+    void onExportCSV();
+    void onResetWindow();
+    void onUpdateSurface();
+    void onRegisterImage();
+    void onResampleIsotropic();
+    void onMeasureTypeChanged(int idx);
+    void onToolModeChanged(int idx);
 
 private:
     ROIVolume*   m_vol   {nullptr};
@@ -53,20 +68,38 @@ private:
     int  m_seedX{0}, m_seedY{0}, m_seedZ{0};
     bool m_seedSet{false};
 
-    // ── Widgets ───────────────────────────────────────────────────────────────
+    // ── Tool & Label ──────────────────────────────────────────────────────────
     QComboBox*      m_toolCombo;
     QComboBox*      m_labelCombo;
     QSpinBox*       m_brushRadiusSpin;
     QComboBox*      m_brushShapeCombo;
     QCheckBox*      m_twoDCheckbox;
 
+    // ── Navigation ────────────────────────────────────────────────────────────
     QSlider*  m_xSlider, *m_ySlider, *m_zSlider;
     QLabel*   m_xLabel,  *m_yLabel,  *m_zLabel;
 
+    // ── Window / Level ────────────────────────────────────────────────────────
+    QDoubleSpinBox* m_wlMinSpin;
+    QDoubleSpinBox* m_wlMaxSpin;
+    QComboBox*      m_wlPresetCombo{nullptr};
+
+    // ── Display ──────────────────────────────────────────────────────────────
+    QComboBox*  m_colormapCombo;
+    QSlider*    m_alphaSlider;
+    QCheckBox*  m_interpolateCheck;
+    QCheckBox*  m_infoOverlayCheck{nullptr};
+    QPushButton* m_showAllBtn, *m_hideAllBtn, *m_resetZoomBtn;
+
+    // ── Cine player ───────────────────────────────────────────────────────────
+    QPushButton* m_cinePlayBtn{nullptr};
+    QSpinBox*    m_cineFpsSpin{nullptr};
+    QComboBox*   m_cineAxisCombo{nullptr};
+
+    // ── Segmentation ──────────────────────────────────────────────────────────
     QComboBox*      m_segMethodCombo;
     QStackedWidget* m_segParamStack;
 
-    // Per-method param widgets
     struct { QDoubleSpinBox* lower; QDoubleSpinBox* upper;
              QCheckBox* sliceOnly; QComboBox* sliceAxis; } m_thresh;
     struct { QDoubleSpinBox* tolerance; } m_grow;
@@ -87,22 +120,65 @@ private:
     QLabel*      m_seedLabel;
     QPushButton* m_applySegBtn;
 
+    // ── Morph ─────────────────────────────────────────────────────────────────
     QSlider*     m_erodeDilateSlider;
     QPushButton* m_applyMorphBtn;
 
+    // ── Edit ──────────────────────────────────────────────────────────────────
     QPushButton* m_undoBtn, *m_clearLabelBtn, *m_clearAllBtn;
 
+    // ── Label tools ───────────────────────────────────────────────────────────
+    QPushButton* m_centroidBtn;
+    QPushButton* m_propFwdBtn, *m_propBwdBtn;
+    QComboBox*   m_propAxisCombo;
+    QPushButton* m_updateSurfBtn;
+
+    // ── Stats ─────────────────────────────────────────────────────────────────
+    QTableWidget* m_statsTable;
+    QPushButton*  m_csvBtn;
+
+    // ── I/O ───────────────────────────────────────────────────────────────────
     QLineEdit*   m_saveDirEdit, *m_saveFileEdit, *m_loadMaskEdit;
     QPushButton* m_saveMaskBtn, *m_loadMaskBtn;
 
+    // ── Registration ──────────────────────────────────────────────────────────
+    QLineEdit*   m_regMovingEdit;
+    QPushButton* m_regBtn;
+
+    // ── VTK / 3-D controls ────────────────────────────────────────────────────
+    QComboBox*      m_vtkModeCombo{nullptr};
+    QPushButton*    m_vtkResetCamBtn{nullptr};
+    QDoubleSpinBox* m_isoSpacingSpin{nullptr};
+    QPushButton*    m_resampleIsoBtn{nullptr};
+
+    // ── Histogram (moved from OrthoViewer) ────────────────────────────────────
+    HistogramWidget* m_histWidget{nullptr};
+
+    // ── DICOM tags ────────────────────────────────────────────────────────────
+    DicomTagWidget*  m_tagWidget{nullptr};
+
+    // ── Measure controls ──────────────────────────────────────────────────────
+    QComboBox*   m_measureTypeCombo{nullptr};
+    QPushButton* m_clearMeasBtn{nullptr};
+    QLabel*      m_lastMeasLabel{nullptr};
+
+    QTabWidget* m_tabs{nullptr};
     QLabel* m_statusLabel;
 
     QGroupBox* buildToolGroup();
     QGroupBox* buildNavGroup();
+    QGroupBox* buildWindowLevelGroup();
+    QGroupBox* buildDisplayGroup();
     QGroupBox* buildSegGroup();
     QGroupBox* buildMorphGroup();
     QGroupBox* buildEditGroup();
+    QGroupBox* buildLabelToolsGroup();
+    QGroupBox* buildStatsGroup();
     QGroupBox* buildIOGroup();
+    QGroupBox* buildRegistrationGroup();
+    QGroupBox* build3DGroup();         // VTK render mode + isotropic resample
+    QGroupBox* buildCineGroup();       // cine / loop player controls
+    QGroupBox* buildMeasureGroup();    // measurement type selector
 
     void setStatus(const QString& msg);
 };

@@ -1,16 +1,20 @@
 // ToolPanel.cpp — Control panel implementation
 
 #include "ToolPanel.h"
+#include "DicomTagWidget.h"
+#include "HistogramWidget.h"
 #include "OrthoViewer.h"
 #include "../core/ROIAlgorithms.h"
 #include "../core/ROIVolume.h"
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -19,6 +23,9 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QStackedWidget>
+#include <QFrame>
+#include <QTabWidget>
+#include <QTableWidget>
 #include <QVBoxLayout>
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
@@ -33,22 +40,94 @@ static QSpinBox* intSpin(int lo,int hi,int val){
 
 // ── Constructor ───────────────────────────────────────────────────────────────
 
+// ── Helper: wrap a list of groups in a scrollable tab page ────────────────────
+static QScrollArea* makeTabPage(std::initializer_list<QGroupBox*> groups)
+{
+    auto* page = new QWidget;
+    auto* pl   = new QVBoxLayout(page);
+    pl->setContentsMargins(4,4,4,4); pl->setSpacing(4);
+    for (auto* g : groups) pl->addWidget(g);
+    pl->addStretch();
+    auto* sa = new QScrollArea;
+    sa->setWidget(page);
+    sa->setWidgetResizable(true);
+    sa->setFrameShape(QFrame::NoFrame);
+    return sa;
+}
+
 ToolPanel::ToolPanel(QWidget* parent) : QWidget(parent)
 {
     setMinimumWidth(280); setMaximumWidth(340);
     auto* ml = new QVBoxLayout(this);
-    ml->setContentsMargins(4,4,4,4); ml->setSpacing(4);
-    ml->addWidget(buildToolGroup());
-    ml->addWidget(buildNavGroup());
-    ml->addWidget(buildSegGroup());
-    ml->addWidget(buildMorphGroup());
-    ml->addWidget(buildEditGroup());
-    ml->addWidget(buildIOGroup());
+    ml->setContentsMargins(2,2,2,2); ml->setSpacing(2);
+
+    m_tabs = new QTabWidget(this);
+    m_tabs->setDocumentMode(true);
+
+    // Tab 0 — Paint: brush tool, navigation, edit buttons
+    m_tabs->addTab(makeTabPage({buildToolGroup(),
+                                buildNavGroup(),
+                                buildEditGroup()}),
+                   "Paint");
+
+    // Tab 1 — Segment: segmentation methods + morph
+    m_tabs->addTab(makeTabPage({buildSegGroup(),
+                                buildMorphGroup()}),
+                   "Segment");
+
+    // Tab 2 — Display: histogram, W/L, colormap / alpha / zoom, 3-D VTK controls
+    {
+        auto* page = new QWidget;
+        auto* pl   = new QVBoxLayout(page);
+        pl->setContentsMargins(4,4,4,4); pl->setSpacing(4);
+
+        // Histogram at the top for quick W/L visual feedback
+        m_histWidget = new HistogramWidget(page);
+        m_histWidget->setFixedHeight(90);
+        pl->addWidget(m_histWidget);
+
+        pl->addWidget(buildWindowLevelGroup());
+        pl->addWidget(buildDisplayGroup());
+        pl->addWidget(buildCineGroup());
+        pl->addWidget(build3DGroup());
+        pl->addStretch();
+
+        auto* sa = new QScrollArea;
+        sa->setWidget(page);
+        sa->setWidgetResizable(true);
+        sa->setFrameShape(QFrame::NoFrame);
+        m_tabs->addTab(sa, "Display");
+    }
+
+    // Tab 3 — Labels: centroid/propagate/3D, stats table
+    m_tabs->addTab(makeTabPage({buildLabelToolsGroup(),
+                                buildStatsGroup()}),
+                   "Labels");
+
+    // Tab 4 — I/O: save/load mask, registration
+    m_tabs->addTab(makeTabPage({buildIOGroup(),
+                                buildRegistrationGroup()}),
+                   "I/O");
+
+    // Tab 5 — Measure: measurement tool type selector
+    m_tabs->addTab(makeTabPage({buildMeasureGroup()}), "Measure");
+
+    // Tab 6 — Tags: DICOM / volume header inspector
+    {
+        auto* page = new QWidget;
+        auto* pl   = new QVBoxLayout(page);
+        pl->setContentsMargins(0,0,0,0); pl->setSpacing(0);
+        m_tagWidget = new DicomTagWidget(page);
+        pl->addWidget(m_tagWidget);
+        m_tabs->addTab(page, "Tags");
+    }
+
+    ml->addWidget(m_tabs, 1);
+
     m_statusLabel = new QLabel(this);
     m_statusLabel->setWordWrap(true);
-    m_statusLabel->setStyleSheet("color:#aaa;font-size:10px;");
+    m_statusLabel->setStyleSheet("color:#aaa;font-size:10px;padding:2px;");
     ml->addWidget(m_statusLabel);
-    ml->addStretch();
 }
 
 // ── Tool group ────────────────────────────────────────────────────────────────
@@ -56,7 +135,10 @@ ToolPanel::ToolPanel(QWidget* parent) : QWidget(parent)
 QGroupBox* ToolPanel::buildToolGroup()
 {
     auto* gb=new QGroupBox("Tool & Label"); auto* l=new QVBoxLayout(gb);
-    m_toolCombo=new QComboBox; m_toolCombo->addItems({"Paint","Erase","Segment"});
+    m_toolCombo=new QComboBox;
+    m_toolCombo->addItems({"Paint","Erase","Segment","Measure"});
+    connect(m_toolCombo,QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this,&ToolPanel::onToolModeChanged);
     l->addWidget(m_toolCombo);
     m_labelCombo=new QComboBox;
     for(int i=1;i<=10;++i) m_labelCombo->addItem(QString("Label %1").arg(i),i);
@@ -305,6 +387,16 @@ QGroupBox* ToolPanel::buildIOGroup()
 void ToolPanel::setVolume(ROIVolume* vol)
 {
     m_vol=vol;
+    if(m_tagWidget) m_tagWidget->setVolume(vol);
+    if(m_histWidget){
+        m_histWidget->setVolume(vol);
+        // Histogram W/L drag → repaint slices
+        connect(m_histWidget, &HistogramWidget::windowChanged, this,
+                [this](float lo, float hi){
+                    if(m_vol) m_vol->setWindow(lo, hi);
+                    emit refreshRequested();
+                }, Qt::UniqueConnection);
+    }
     if(!vol||!vol->isLoaded()) return;
     {QSignalBlocker b(m_xSlider); m_xSlider->setMaximum(vol->nx()-1); m_xSlider->setValue(vol->nx()/2); m_xLabel->setText(QString("X %1").arg(vol->nx()/2));}
     {QSignalBlocker b(m_ySlider); m_ySlider->setMaximum(vol->ny()-1); m_ySlider->setValue(vol->ny()/2); m_yLabel->setText(QString("Y %1").arg(vol->ny()/2));}
@@ -314,8 +406,42 @@ void ToolPanel::setVolume(ROIVolume* vol)
     m_thresh.upper->setRange(vmin,vmax); m_thresh.upper->setValue(vmax);
     m_nbr.lower->setRange(vmin,vmax);    m_nbr.lower->setValue(vmin);
     m_nbr.upper->setRange(vmin,vmax);    m_nbr.upper->setValue(vmax);
+    onVolumeLoaded();
 }
-void ToolPanel::setViewer(OrthoViewer* v){ m_viewer=v; }
+void ToolPanel::setViewer(OrthoViewer* v){
+    m_viewer=v;
+    if(v){
+        // Forward measurement results to the last-result label
+        connect(v, &OrthoViewer::measurementAdded, this,
+                [this](const QString& s){
+                    if(m_lastMeasLabel) m_lastMeasLabel->setText(s);
+                }, Qt::UniqueConnection);
+
+        // ── Cine player ───────────────────────────────────────────────────────
+        connect(m_cinePlayBtn, &QPushButton::toggled, this, [this](bool on){
+            if (!m_viewer) return;
+            if (on) {
+                m_cinePlayBtn->setText("⏹  Stop");
+                m_viewer->setCineFps(m_cineFpsSpin->value());
+                m_viewer->setCineAxis(m_cineAxisCombo->currentIndex());
+                m_viewer->playCine();
+            } else {
+                m_cinePlayBtn->setText("▶  Play");
+                m_viewer->stopCine();
+            }
+        }, Qt::UniqueConnection);
+        connect(m_cineFpsSpin, QOverload<int>::of(&QSpinBox::valueChanged),
+                this, [this](int fps){ if(m_viewer) m_viewer->setCineFps(fps); },
+                Qt::UniqueConnection);
+        connect(m_cineAxisCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this](int ax){ if(m_viewer) m_viewer->setCineAxis(ax); },
+                Qt::UniqueConnection);
+
+        // Sync info overlay checkbox with viewer state
+        if (m_infoOverlayCheck)
+            v->setShowInfoOverlay(m_infoOverlayCheck->isChecked());
+    }
+}
 int     ToolPanel::activeLabel() const { return m_labelCombo->currentData().toInt(); }
 QString ToolPanel::toolMode()    const { return m_toolCombo->currentText().toLower(); }
 int     ToolPanel::brushRadius() const { return m_brushRadiusSpin ? m_brushRadiusSpin->value() : 3; }
@@ -419,3 +545,393 @@ void ToolPanel::onLoadMask(){
     else setStatus("Load failed.");
 }
 void ToolPanel::setStatus(const QString& msg){ m_statusLabel->setText(msg); }
+
+// ── Constructor: add new groups ───────────────────────────────────────────────
+// (called after ml->addStretch() in constructor — we patch the constructor
+//  by rebuilding the layout order via the group builder methods added below)
+
+// ── Window / Level group ──────────────────────────────────────────────────────
+
+QGroupBox* ToolPanel::buildWindowLevelGroup()
+{
+    auto* gb=new QGroupBox("Window / Level"); auto* l=new QVBoxLayout(gb);
+    auto* row=new QHBoxLayout;
+    m_wlMinSpin=new QDoubleSpinBox; m_wlMinSpin->setRange(-100000,100000); m_wlMinSpin->setDecimals(1); m_wlMinSpin->setPrefix("Min ");
+    m_wlMaxSpin=new QDoubleSpinBox; m_wlMaxSpin->setRange(-100000,100000); m_wlMaxSpin->setDecimals(1); m_wlMaxSpin->setPrefix("Max ");
+    auto* autoBtn=new QPushButton("Auto");
+    row->addWidget(m_wlMinSpin); row->addWidget(m_wlMaxSpin); row->addWidget(autoBtn);
+    l->addLayout(row);
+
+    // ── CT / MR presets ───────────────────────────────────────────────────────
+    // Stored as (center, width); min = center - width/2, max = center + width/2.
+    static constexpr struct { const char* name; float center, width; } WL_PRESETS[] = {
+        {"Brain",            40,    80},
+        {"Stroke",            8,    32},
+        {"Subdural",         75,   215},
+        {"Temporal Bone",   700,  4000},
+        {"Soft Tissue",      40,   350},
+        {"Mediastinum",      40,   400},
+        {"Abdomen",          60,   400},
+        {"Lung",           -600,  1500},
+        {"Bone",            700,  3000},
+        {"MR T1 Brain",     500,  1000},
+        {"MR T2 Brain",     800,  1600},
+    };
+    m_wlPresetCombo = new QComboBox;
+    m_wlPresetCombo->addItem("— CT/MR Preset —");
+    for (const auto& p : WL_PRESETS)
+        m_wlPresetCombo->addItem(
+            QString("%1  (W:%2 L:%3)").arg(p.name).arg((int)p.width).arg((int)p.center));
+    l->addWidget(m_wlPresetCombo);
+
+    connect(m_wlMinSpin,QOverload<double>::of(&QDoubleSpinBox::valueChanged),this,[this](double v){
+        if(m_vol){ m_vol->setWindow((float)v,(float)m_wlMaxSpin->value()); emit refreshRequested();}});
+    connect(m_wlMaxSpin,QOverload<double>::of(&QDoubleSpinBox::valueChanged),this,[this](double v){
+        if(m_vol){ m_vol->setWindow((float)m_wlMinSpin->value(),(float)v); emit refreshRequested();}});
+    connect(autoBtn,&QPushButton::clicked,this,&ToolPanel::onResetWindow);
+    connect(m_wlPresetCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int idx){
+                if (idx == 0 || !m_vol) return;
+                static constexpr float C[] = {40,8,75,700,40,40,60,-600,700,500,800};
+                static constexpr float W[] = {80,32,215,4000,350,400,400,1500,3000,1000,1600};
+                int i = idx - 1;
+                float lo = C[i] - W[i] / 2.f, hi = C[i] + W[i] / 2.f;
+                m_vol->setWindow(lo, hi);
+                { QSignalBlocker b1(m_wlMinSpin), b2(m_wlMaxSpin);
+                  m_wlMinSpin->setValue(lo); m_wlMaxSpin->setValue(hi); }
+                emit refreshRequested();
+                { QSignalBlocker b3(m_wlPresetCombo); m_wlPresetCombo->setCurrentIndex(0); }
+            });
+    return gb;
+}
+
+// ── Display group ─────────────────────────────────────────────────────────────
+
+QGroupBox* ToolPanel::buildDisplayGroup()
+{
+    auto* gb=new QGroupBox("Display"); auto* l=new QVBoxLayout(gb);
+    m_colormapCombo=new QComboBox;
+    m_colormapCombo->addItems({"Gray","Hot","Cool","Viridis"});
+    l->addWidget(m_colormapCombo);
+    auto* arow=new QHBoxLayout;
+    arow->addWidget(new QLabel("Overlay α"));
+    m_alphaSlider=new QSlider(Qt::Horizontal); m_alphaSlider->setRange(0,100); m_alphaSlider->setValue(100);
+    arow->addWidget(m_alphaSlider); l->addLayout(arow);
+    m_interpolateCheck=new QCheckBox("Smooth interpolation"); l->addWidget(m_interpolateCheck);
+    m_infoOverlayCheck=new QCheckBox("Show info overlay (W/L + position)");
+    m_infoOverlayCheck->setChecked(true);
+    l->addWidget(m_infoOverlayCheck);
+    auto* brow=new QHBoxLayout;
+    m_showAllBtn=new QPushButton("Show All"); m_hideAllBtn=new QPushButton("Hide All");
+    m_resetZoomBtn=new QPushButton("Reset Zoom");
+    brow->addWidget(m_showAllBtn); brow->addWidget(m_hideAllBtn); brow->addWidget(m_resetZoomBtn);
+    l->addLayout(brow);
+    connect(m_colormapCombo,QOverload<int>::of(&QComboBox::currentIndexChanged),this,[this](int idx){
+        if(m_viewer) m_viewer->setColormap(idx);});
+    connect(m_alphaSlider,&QSlider::valueChanged,this,[this](int v){
+        if(m_viewer) m_viewer->setOverlayAlpha(v/100.f);});
+    connect(m_interpolateCheck,&QCheckBox::toggled,this,[this](bool on){
+        if(m_viewer) m_viewer->setInterpolate(on);});
+    connect(m_infoOverlayCheck,&QCheckBox::toggled,this,[this](bool on){
+        if(m_viewer) m_viewer->setShowInfoOverlay(on);});
+    connect(m_showAllBtn,&QPushButton::clicked,this,[this]{ if(m_viewer) m_viewer->setAllLabelsVisible(true);});
+    connect(m_hideAllBtn,&QPushButton::clicked,this,[this]{ if(m_viewer) m_viewer->setAllLabelsVisible(false);});
+    connect(m_resetZoomBtn,&QPushButton::clicked,this,[this]{ if(m_viewer) m_viewer->resetAllZoom();});
+    return gb;
+}
+
+// ── Label tools group ─────────────────────────────────────────────────────────
+
+QGroupBox* ToolPanel::buildLabelToolsGroup()
+{
+    auto* gb=new QGroupBox("Label Tools"); auto* l=new QVBoxLayout(gb);
+    m_centroidBtn=new QPushButton("Snap to Centroid"); l->addWidget(m_centroidBtn);
+    auto* prow=new QHBoxLayout;
+    prow->addWidget(new QLabel("Propagate:"));
+    m_propAxisCombo=new QComboBox; m_propAxisCombo->addItems({"X(sag)","Y(cor)","Z(axi)"});
+    prow->addWidget(m_propAxisCombo);
+    m_propBwdBtn=new QPushButton("◀"); m_propBwdBtn->setFixedWidth(30);
+    m_propFwdBtn=new QPushButton("▶"); m_propFwdBtn->setFixedWidth(30);
+    prow->addWidget(m_propBwdBtn); prow->addWidget(m_propFwdBtn);
+    l->addLayout(prow);
+    m_updateSurfBtn=new QPushButton("Update 3D Surface");
+    m_updateSurfBtn->setStyleSheet("background:#226;color:white;");
+    l->addWidget(m_updateSurfBtn);
+    connect(m_centroidBtn,  &QPushButton::clicked,this,&ToolPanel::onSnapToCentroid);
+    connect(m_propBwdBtn,   &QPushButton::clicked,this,[this]{ onPropagateLabel(-1);});
+    connect(m_propFwdBtn,   &QPushButton::clicked,this,[this]{ onPropagateLabel(+1);});
+    connect(m_updateSurfBtn,&QPushButton::clicked,this,&ToolPanel::onUpdateSurface);
+    return gb;
+}
+
+// ── Stats group ───────────────────────────────────────────────────────────────
+
+QGroupBox* ToolPanel::buildStatsGroup()
+{
+    auto* gb=new QGroupBox("Label Statistics"); auto* l=new QVBoxLayout(gb);
+    m_statsTable=new QTableWidget(0,5);
+    m_statsTable->setHorizontalHeaderLabels({"Label","Voxels","Vol(mm³)","Mean","Std"});
+    m_statsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_statsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_statsTable->setMaximumHeight(120);
+    m_statsTable->horizontalHeader()->setStretchLastSection(true);
+    l->addWidget(m_statsTable);
+    m_csvBtn=new QPushButton("Export CSV…"); l->addWidget(m_csvBtn);
+    connect(m_csvBtn,&QPushButton::clicked,this,&ToolPanel::onExportCSV);
+    return gb;
+}
+
+// ── Registration group ────────────────────────────────────────────────────────
+
+QGroupBox* ToolPanel::buildRegistrationGroup()
+{
+    auto* gb=new QGroupBox("Image Registration"); auto* l=new QVBoxLayout(gb);
+    l->addWidget(new QLabel("Moving image (NIfTI or DICOM folder):"));
+    m_regMovingEdit=new QLineEdit; m_regMovingEdit->setPlaceholderText("/path/to/moving.nii.gz");
+    auto* br=new QPushButton("…"); br->setMaximumWidth(30);
+    auto* rrow=new QHBoxLayout; rrow->addWidget(m_regMovingEdit); rrow->addWidget(br);
+    l->addLayout(rrow);
+    m_regBtn=new QPushButton("Register & Load");
+    m_regBtn->setStyleSheet("background:#520;color:white;font-weight:bold;");
+    l->addWidget(m_regBtn);
+    l->addWidget(new QLabel("Rigid registration. Replaces display\nimage; mask preserved."));
+    connect(br,&QPushButton::clicked,this,[this]{
+        QString p=QFileDialog::getOpenFileName(this,"Select moving image","",
+                    "NIfTI (*.nii *.nii.gz);;All files (*)");
+        if(!p.isEmpty()) m_regMovingEdit->setText(p);
+    });
+    connect(m_regBtn,&QPushButton::clicked,this,&ToolPanel::onRegisterImage);
+    return gb;
+}
+
+// ── New slot implementations ──────────────────────────────────────────────────
+
+void ToolPanel::onResetWindow(){
+    if(!m_vol) return;
+    m_vol->resetWindow();
+    QSignalBlocker b1(m_wlMinSpin), b2(m_wlMaxSpin);
+    m_wlMinSpin->setValue(m_vol->vmin());
+    m_wlMaxSpin->setValue(m_vol->vmax());
+    emit refreshRequested();
+}
+
+void ToolPanel::onVolumeLoaded(){
+    if(!m_vol) return;
+    QSignalBlocker b1(m_wlMinSpin), b2(m_wlMaxSpin);
+    m_wlMinSpin->setRange(m_vol->vmin()-50000, m_vol->vmax()+50000);
+    m_wlMaxSpin->setRange(m_vol->vmin()-50000, m_vol->vmax()+50000);
+    m_wlMinSpin->setValue(m_vol->vmin());
+    m_wlMaxSpin->setValue(m_vol->vmax());
+}
+
+void ToolPanel::refreshStats(){
+    if(!m_statsTable||!m_vol) return;
+    auto stats=m_vol->computeAllStats();
+    m_statsTable->setRowCount((int)stats.size());
+    for(int i=0;i<(int)stats.size();++i){
+        auto& s=stats[i];
+        m_statsTable->setItem(i,0,new QTableWidgetItem(QString::number(s.label)));
+        m_statsTable->setItem(i,1,new QTableWidgetItem(QString::number(s.voxelCount)));
+        m_statsTable->setItem(i,2,new QTableWidgetItem(QString::number(s.volumeMm3,'f',1)));
+        m_statsTable->setItem(i,3,new QTableWidgetItem(QString::number(s.meanIntensity,'f',1)));
+        m_statsTable->setItem(i,4,new QTableWidgetItem(QString::number(s.stdIntensity,'f',1)));
+    }
+}
+
+void ToolPanel::onSnapToCentroid(){
+    if(!m_vol||!m_viewer) return;
+    auto c=m_vol->labelCentroid(activeLabel());
+    m_viewer->setX((int)std::round(c[0]));
+    m_viewer->setY((int)std::round(c[1]));
+    m_viewer->setZ((int)std::round(c[2]));
+}
+
+void ToolPanel::onPropagateLabel(int direction){
+    if(!m_vol||!m_viewer) return;
+    int ac=m_propAxisCombo->currentIndex(); // 0=X,1=Y,2=Z
+    int axisIdx=(ac==0)?m_viewer->x():(ac==1)?m_viewer->y():m_viewer->z();
+    int n=m_vol->propagateLabel(activeLabel(),ac,axisIdx,direction);
+    setStatus(QString("Propagated %1 voxels.").arg(n));
+    emit refreshRequested();
+}
+
+void ToolPanel::onExportCSV(){
+    if(!m_vol) return;
+    QString path=QFileDialog::getSaveFileName(this,"Export Statistics CSV","roisa_stats.csv","CSV (*.csv)");
+    if(path.isEmpty()) return;
+    if(m_vol->exportStatsCSV(path.toStdString())) setStatus("Stats exported: "+path);
+    else setStatus("CSV export failed.");
+}
+
+void ToolPanel::onUpdateSurface(){
+    if(!m_viewer) return;
+    m_viewer->refreshSurface(activeLabel());
+    setStatus("3D surface updated.");
+}
+
+void ToolPanel::onRegisterImage(){
+    if(!m_vol||!m_vol->isLoaded()){ setStatus("Load a fixed image first."); return; }
+    QString p=m_regMovingEdit->text().trimmed(); if(p.isEmpty()){ setStatus("No moving image path."); return; }
+    setStatus("Registering… (this may take ~30 s)");
+    QApplication::processEvents();
+    if(m_vol->loadRegisteredImage(p.toStdString())){
+        onVolumeLoaded();
+        emit refreshRequested();
+        setStatus("Registration complete. Display image replaced.");
+    } else {
+        setStatus("Registration failed. See console.");
+    }
+}
+
+// ── Cine group ────────────────────────────────────────────────────────────────
+
+QGroupBox* ToolPanel::buildCineGroup()
+{
+    auto* gb = new QGroupBox("Cine / Loop"); auto* l = new QVBoxLayout(gb);
+
+    auto* topRow = new QHBoxLayout;
+    m_cinePlayBtn = new QPushButton("▶  Play");
+    m_cinePlayBtn->setCheckable(true);
+    m_cinePlayBtn->setStyleSheet("QPushButton:checked{background:#245;color:white;}");
+    topRow->addWidget(m_cinePlayBtn);
+    topRow->addWidget(new QLabel("FPS:"));
+    m_cineFpsSpin = new QSpinBox;
+    m_cineFpsSpin->setRange(1, 30); m_cineFpsSpin->setValue(8); m_cineFpsSpin->setMaximumWidth(54);
+    topRow->addWidget(m_cineFpsSpin);
+    l->addLayout(topRow);
+
+    auto* axRow = new QHBoxLayout;
+    axRow->addWidget(new QLabel("Axis:"));
+    m_cineAxisCombo = new QComboBox;
+    m_cineAxisCombo->addItems({"Sagittal (X)", "Coronal (Y)", "Axial (Z)"});
+    m_cineAxisCombo->setCurrentIndex(2);
+    axRow->addWidget(m_cineAxisCombo);
+    l->addLayout(axRow);
+
+    // Connections wired in setViewer() once the viewer is available
+    return gb;
+}
+
+// ── 3-D / VTK group ───────────────────────────────────────────────────────────
+
+QGroupBox* ToolPanel::build3DGroup()
+{
+    auto* gb = new QGroupBox("3-D Render"); auto* l = new QVBoxLayout(gb);
+
+    // Render mode
+    auto* mrow = new QHBoxLayout;
+    mrow->addWidget(new QLabel("Mode:"));
+    m_vtkModeCombo = new QComboBox;
+    m_vtkModeCombo->addItems({"Volume", "Surfaces", "Both"});
+    m_vtkModeCombo->setCurrentIndex(2);
+    mrow->addWidget(m_vtkModeCombo);
+    l->addLayout(mrow);
+
+    m_vtkResetCamBtn = new QPushButton("Reset Camera");
+    l->addWidget(m_vtkResetCamBtn);
+
+    // Isotropic resample
+    l->addWidget(new QLabel("Resample to isotropic voxels:"));
+    auto* irow = new QHBoxLayout;
+    irow->addWidget(new QLabel("Spacing (mm):"));
+    m_isoSpacingSpin = new QDoubleSpinBox;
+    m_isoSpacingSpin->setRange(0.0, 10.0);   // 0.0 == minimum == special-value "Auto (min)"
+    m_isoSpacingSpin->setValue(0.0);
+    m_isoSpacingSpin->setSingleStep(0.1);
+    m_isoSpacingSpin->setDecimals(3);
+    m_isoSpacingSpin->setSpecialValueText("Auto (min)");
+    irow->addWidget(m_isoSpacingSpin);
+    l->addLayout(irow);
+
+    m_resampleIsoBtn = new QPushButton("Apply Isotropic Resample");
+    m_resampleIsoBtn->setStyleSheet("background:#245;color:white;font-weight:bold;");
+    l->addWidget(m_resampleIsoBtn);
+    l->addWidget(new QLabel(
+        "Replaces display image; mask is reset.\n"
+        "Recommended before VTK volume render.",
+        gb));
+    l->itemAt(l->count()-1)->widget()->setStyleSheet("color:#888;font-size:10px;");
+
+    connect(m_vtkModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int idx){ if(m_viewer) m_viewer->setVtkRenderMode(idx); });
+    connect(m_vtkResetCamBtn, &QPushButton::clicked,
+            this, [this]{ if(m_viewer) m_viewer->resetVtkCamera(); });
+    connect(m_resampleIsoBtn, &QPushButton::clicked,
+            this, &ToolPanel::onResampleIsotropic);
+
+    return gb;
+}
+
+// ── Measure group ─────────────────────────────────────────────────────────────
+
+QGroupBox* ToolPanel::buildMeasureGroup()
+{
+    auto* gb = new QGroupBox("Measurement Tool"); auto* l = new QVBoxLayout(gb);
+    l->addWidget(new QLabel(
+        "Select \"Measure\" in the Paint tab tool\n"
+        "combo, then click in any slice view.", gb));
+
+    l->addWidget(new QLabel("Measurement type:", gb));
+    m_measureTypeCombo = new QComboBox;
+    m_measureTypeCombo->addItems({"Ruler (2 clicks)",
+                                   "Angle (3 clicks — vertex 2nd)",
+                                   "Circle area (drag)"});
+    l->addWidget(m_measureTypeCombo);
+
+    m_lastMeasLabel = new QLabel("—", gb);
+    m_lastMeasLabel->setStyleSheet("color:#aef; font-size:11px;");
+    m_lastMeasLabel->setWordWrap(true);
+    l->addWidget(new QLabel("Last result:", gb));
+    l->addWidget(m_lastMeasLabel);
+
+    m_clearMeasBtn = new QPushButton("Clear All Measurements");
+    m_clearMeasBtn->setStyleSheet("background:#500;color:white;");
+    l->addWidget(m_clearMeasBtn);
+
+    connect(m_measureTypeCombo,
+            QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &ToolPanel::onMeasureTypeChanged);
+    connect(m_clearMeasBtn, &QPushButton::clicked, this, [this]{
+        if(m_viewer) m_viewer->clearMeasurements();
+    });
+    return gb;
+}
+
+void ToolPanel::onMeasureTypeChanged(int idx)
+{
+    // Only apply if we're in Measure tool mode
+    if(toolMode() == "measure" && m_viewer)
+        m_viewer->setMeasureMode(idx + 1);  // 0=None, 1=Ruler, 2=Angle, 3=Circle
+}
+
+void ToolPanel::onToolModeChanged(int /*idx*/)
+{
+    if(!m_viewer) return;
+    if(toolMode() == "measure") {
+        int type = m_measureTypeCombo ? m_measureTypeCombo->currentIndex()+1 : 1;
+        m_viewer->setMeasureMode(type);
+    } else {
+        m_viewer->setMeasureMode(0);   // None
+    }
+}
+
+void ToolPanel::onResampleIsotropic()
+{
+    if(!m_vol||!m_vol->isLoaded()){ setStatus("No image loaded."); return; }
+    float sp = (float)m_isoSpacingSpin->value();  // 0 = auto
+    setStatus("Resampling… please wait");
+    QApplication::processEvents();
+    if(m_vol->resampleToIsotropicSpacing(sp)){
+        onVolumeLoaded();
+        if(m_histWidget) m_histWidget->refresh();
+        if(m_viewer){
+            m_viewer->setVolume(m_vol);   // re-push new display image to VTK
+            m_viewer->refresh();
+        }
+        emit refreshRequested();
+        setStatus(QString("Resampled. Display: %1×%2×%3")
+                  .arg(m_vol->nx()).arg(m_vol->ny()).arg(m_vol->nz()));
+    } else {
+        setStatus("Resample failed — see console.");
+    }
+}
