@@ -1,0 +1,129 @@
+#pragma once
+// ROIVolume.h — Core data model for the ROI tool
+//
+// Holds the display-space float volume and int16 mask.  All segmentation
+// algorithms operate on the display-space data; the mask is resampled back to
+// original image space only when saving.
+
+#include <array>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <string>
+#include <vector>
+
+#include <itkImage.h>
+
+class ROIVolume
+{
+public:
+    // ── ITK type aliases ──────────────────────────────────────────────────────
+    using FloatImage3 = itk::Image<float,   3>;
+    using Int16Image3 = itk::Image<int16_t, 3>;
+    using Uint8Image3 = itk::Image<uint8_t, 3>;
+    using FloatPtr    = FloatImage3::Pointer;
+    using Int16Ptr    = Int16Image3::Pointer;
+    using Uint8Ptr    = Uint8Image3::Pointer;
+
+    static constexpr int TARGET_SIZE = 256;   // isotropic display resolution
+    static constexpr int MAX_LABELS  = 255;
+    static constexpr int MAX_UNDO    = 30;
+
+    ROIVolume()  = default;
+    ~ROIVolume() = default;
+
+    // ── I/O ───────────────────────────────────────────────────────────────────
+
+    /// Load NIfTI (.nii / .nii.gz) or a DICOM folder.
+    /// Resamples to isotropic TARGET_SIZE for display.
+    bool load(const std::string& path);
+
+    /// Resample mask back to original image space and write as NIfTI.
+    bool saveMask(const std::string& outPath) const;
+
+    /// Load an existing mask NIfTI (original-space) and resample to display.
+    bool loadMask(const std::string& maskPath);
+
+    // ── State ─────────────────────────────────────────────────────────────────
+    bool isLoaded() const { return static_cast<bool>(m_displayImg); }
+
+    int nx() const;   // display-space X size
+    int ny() const;   // display-space Y size
+    int nz() const;   // display-space Z size
+
+    // ── Intensity window ──────────────────────────────────────────────────────
+    float vmin() const { return m_vmin; }
+    float vmax() const { return m_vmax; }
+    void  setWindow(float vmin, float vmax) { m_vmin = vmin; m_vmax = vmax; }
+
+    // ── Voxel access (display space, x/y/z indexing) ──────────────────────────
+    float   getIntensity(int x, int y, int z) const;
+    int16_t getMaskLabel (int x, int y, int z) const;
+    void    setMaskLabel (int x, int y, int z, int16_t label);
+
+    // ── Slice data for rendering ───────────────────────────────────────────────
+    // axis: 0 = sagittal (constant x), 1 = coronal (constant y), 2 = axial (const z)
+    // Slice layout:
+    //   axis 0: rows = ny, cols = nz   → pixel(row,col) = vol[idx, row, col]
+    //   axis 1: rows = nx, cols = nz   → pixel(row,col) = vol[row, idx, col]
+    //   axis 2: rows = nx, cols = ny   → pixel(row,col) = vol[row, col, idx]
+    int sliceRows(int axis) const;
+    int sliceCols(int axis) const;
+    void getIntensitySlice(int axis, int idx, std::vector<float>&   dst) const;
+    void getMaskSlice     (int axis, int idx, std::vector<int16_t>& dst) const;
+
+    // ── Raw ITK access (for algorithm implementations) ─────────────────────────
+    FloatPtr  displayImage() const { return m_displayImg; }
+    Int16Ptr  maskImage()    const { return m_mask; }
+
+    // ── Bulk mask write (used by algorithms after computing new labels) ─────────
+    /// Overwrite the mask with the contents of newMask (must match display size).
+    void replaceMask(Int16Ptr newMask);
+
+    // ── Mask helpers ──────────────────────────────────────────────────────────
+    /// Clear voxels with the given label; pass -1 to clear all.
+    void clearLabel(int label);
+
+    // ── Undo ──────────────────────────────────────────────────────────────────
+    struct UndoEntry {
+        std::vector<std::array<int,3>> indices;
+        std::vector<int16_t>           oldValues;
+    };
+
+    /// Push an undo entry.  Call *before* modifying the mask.
+    void pushUndo(std::vector<std::array<int,3>> indices,
+                  std::vector<int16_t>           oldValues);
+
+    /// Convenience: capture every voxel currently assigned `label` as undo.
+    void pushUndoForLabel(int label);
+
+    /// Capture the entire mask as a single undo entry.
+    void pushUndoAll();
+
+    bool undo();
+    bool canUndo() const { return !m_history.empty(); }
+
+    // ── Change notification ────────────────────────────────────────────────────
+    /// Callback fires whenever the mask changes (e.g., to trigger a repaint).
+    void setChangeCallback(std::function<void()> cb) { m_onChange = std::move(cb); }
+    void notifyChange();
+
+private:
+    FloatPtr m_origImg;      // original image (full resolution, for save)
+    FloatPtr m_displayImg;   // float32, isotropically resampled to TARGET_SIZE
+    Int16Ptr m_mask;         // int16, same grid as m_displayImg
+
+    float m_vmin{0.f};
+    float m_vmax{1.f};
+
+    std::deque<UndoEntry>  m_history;
+    std::function<void()>  m_onChange;
+
+    // Internal helpers
+    FloatPtr loadNiftiOrMeta(const std::string& path);
+    FloatPtr loadDicomSeries(const std::string& dir);
+    FloatPtr resampleIsotropic(FloatPtr img, int targetSize);
+    Int16Ptr createMask(FloatPtr ref);     // zero-filled, same grid as ref
+    Int16Ptr resampleMaskToRef(Int16Ptr mask, FloatPtr ref); // NN interp
+    void     computeWindow();
+};
