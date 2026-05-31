@@ -6,6 +6,7 @@
 #include "HistogramWidget.h"
 #include "OrthoViewer.h"
 #include "TacWidget.h"
+#include "BarsWidget.h"
 #include "../core/ROIAlgorithms.h"
 #include "../core/ROIVolume.h"
 
@@ -234,10 +235,92 @@ QWidget* ToolPanel::buildQuantOperator()
     auto* w = new QWidget;
     auto* l = new QVBoxLayout(w);
     l->setContentsMargins(0,0,0,0); l->setSpacing(0);
-    l->addWidget(makeTabPage({buildSuvParamGroup(),
+    auto* tabs = new QTabWidget; tabs->setDocumentMode(true);
+    tabs->addTab(makeTabPage({buildSuvParamGroup(),
                               buildQuantTableGroup(),
-                              buildTacGroup()}));
+                              buildTacGroup()}), "SUV");
+    tabs->addTab(makeTabPage({buildPctThresholdGroup(),
+                              buildRatioGroup(),
+                              buildRoiHistGroup()}), "Analysis");
+    l->addWidget(tabs);
     return w;
+}
+
+// ── Analysis groups ─────────────────────────────────────────────────────────────
+
+QGroupBox* ToolPanel::buildPctThresholdGroup()
+{
+    auto* gb = new QGroupBox("Percent Threshold  (PERCIST-style)"); auto* l = new QVBoxLayout(gb);
+    l->addWidget(new QLabel("Select voxels ≥ X% of the peak on the activity image."));
+    auto* srow = new QHBoxLayout; srow->addWidget(new QLabel("Peak from"));
+    m_pctSource = new QComboBox; m_pctSource->addItem("Whole image", 0);
+    for (int i = 1; i <= 10; ++i) m_pctSource->addItem(QString("Label %1").arg(i), i);
+    srow->addWidget(m_pctSource, 1); l->addLayout(srow);
+    auto* prow = new QHBoxLayout; prow->addWidget(new QLabel("Threshold %"));
+    m_pctValue = dbl(1, 100, 41, 1, 1); prow->addWidget(m_pctValue); l->addLayout(prow);
+    auto* trow = new QHBoxLayout; trow->addWidget(new QLabel("Write to label"));
+    m_pctTarget = new QComboBox;
+    for (int i = 1; i <= 10; ++i) m_pctTarget->addItem(QString("Label %1").arg(i), i);
+    trow->addWidget(m_pctTarget, 1); l->addLayout(trow);
+    auto* btn = new QPushButton("Apply Threshold");
+    btn->setStyleSheet("QPushButton{background:#1c3a55;color:#cfe;font-weight:bold;padding:4px;}"
+                       "QPushButton:hover{background:#24507a;}");
+    l->addWidget(btn);
+    connect(btn, &QPushButton::clicked, this, [this]{
+        emit percentThresholdRequested(m_pctSource->currentData().toInt(),
+                                       m_pctValue->value(),
+                                       m_pctTarget->currentData().toInt());
+    });
+    return gb;
+}
+
+QGroupBox* ToolPanel::buildRatioGroup()
+{
+    auto* gb = new QGroupBox("ROI Ratio  (lesion-to-background)"); auto* l = new QVBoxLayout(gb);
+    auto* row = new QHBoxLayout;
+    m_ratioA = new QComboBox; m_ratioB = new QComboBox;
+    for (QComboBox* c : {m_ratioA, m_ratioB})
+        for (int i = 1; i <= 10; ++i) c->addItem(QString("Label %1").arg(i), i);
+    m_ratioB->setCurrentIndex(1);
+    row->addWidget(new QLabel("A")); row->addWidget(m_ratioA, 1);
+    row->addWidget(new QLabel("/ B")); row->addWidget(m_ratioB, 1);
+    l->addLayout(row);
+    auto* btn = new QPushButton("Compute Ratio"); l->addWidget(btn);
+    m_ratioResult = new QLabel("—");
+    m_ratioResult->setStyleSheet("color:#aef;font-size:11px;");
+    m_ratioResult->setWordWrap(true); l->addWidget(m_ratioResult);
+    connect(btn, &QPushButton::clicked, this, [this]{
+        emit roiRatioRequested(m_ratioA->currentData().toInt(),
+                               m_ratioB->currentData().toInt());
+    });
+    return gb;
+}
+
+QGroupBox* ToolPanel::buildRoiHistGroup()
+{
+    auto* gb = new QGroupBox("ROI Histogram"); auto* l = new QVBoxLayout(gb);
+    auto* row = new QHBoxLayout; row->addWidget(new QLabel("Label"));
+    m_histLabel = new QComboBox;
+    for (int i = 1; i <= 10; ++i) m_histLabel->addItem(QString("Label %1").arg(i), i);
+    row->addWidget(m_histLabel, 1);
+    auto* btn = new QPushButton("Compute"); row->addWidget(btn);
+    l->addLayout(row);
+    m_roiHist = new BarsWidget; l->addWidget(m_roiHist);
+    connect(btn, &QPushButton::clicked, this, [this]{
+        emit roiHistRequested(m_histLabel->currentData().toInt());
+    });
+    return gb;
+}
+
+void ToolPanel::setRoiRatioResult(const QString& text)
+{
+    if (m_ratioResult) m_ratioResult->setText(text);
+}
+
+void ToolPanel::setRoiHist(const std::vector<double>& counts, double vmin, double vmax,
+                           const QString& title)
+{
+    if (m_roiHist) m_roiHist->setData(counts, vmin, vmax, title);
 }
 
 // ── Quantification groups ───────────────────────────────────────────────────────

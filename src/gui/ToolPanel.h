@@ -19,6 +19,7 @@ class QGroupBox;    class QTableWidget;  class QTabWidget;
 class HistogramWidget;
 class DicomTagWidget;
 class TacWidget;
+class BarsWidget;
 class ROIVolume;    class OrthoViewer;
 
 class ToolPanel : public QWidget
@@ -62,6 +63,9 @@ public:
     void       setQuantResults(const std::vector<ROISUVStats>& rows);
     const std::vector<ROISUVStats>& quantResults() const { return m_quantRows; }
     void       setTac(const std::vector<double>& values, const QString& ylabel = "SUVmean");
+    void       setRoiRatioResult(const QString& text);
+    void       setRoiHist(const std::vector<double>& counts, double vmin, double vmax,
+                          const QString& title);
 
 signals:
     void refreshRequested();
@@ -80,6 +84,10 @@ signals:
     void suvAutofillRequested(int activityIdx);
     void suvExportRequested();
     void tacComputeRequested(int label, int activityIdx);
+    // Analysis tab
+    void percentThresholdRequested(int sourceLabel, double pct, int targetLabel);
+    void roiRatioRequested(int labelA, int labelB);
+    void roiHistRequested(int label);
 
 public slots:
     void onPositionChanged(int x, int y, int z);
@@ -267,6 +275,15 @@ private:
     QPushButton*    m_tacBtn{nullptr};
     TacWidget*      m_tacWidget{nullptr};
     std::vector<ROISUVStats> m_quantRows;
+    // Analysis tab
+    QComboBox*   m_pctSource{nullptr};
+    QDoubleSpinBox* m_pctValue{nullptr};
+    QComboBox*   m_pctTarget{nullptr};
+    QComboBox*   m_ratioA{nullptr};
+    QComboBox*   m_ratioB{nullptr};
+    QLabel*      m_ratioResult{nullptr};
+    QComboBox*   m_histLabel{nullptr};
+    BarsWidget*  m_roiHist{nullptr};
 
     // ── Measure operator ───────────────────────────────────────────────────────
     QComboBox*   m_measureTypeCombo{nullptr};
@@ -297,6 +314,9 @@ private:
     QGroupBox* buildSuvParamGroup();
     QGroupBox* buildQuantTableGroup();
     QGroupBox* buildTacGroup();
+    QGroupBox* buildPctThresholdGroup();
+    QGroupBox* buildRatioGroup();
+    QGroupBox* buildRoiHistGroup();
 
     // ── Operator page builders ─────────────────────────────────────────────────
     QWidget* buildNavViewerOperator();

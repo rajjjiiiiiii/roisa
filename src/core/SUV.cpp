@@ -185,4 +185,78 @@ std::vector<double> tac(const std::vector<const float*>& frames,
     return out;
 }
 
+// ── ROI analysis ────────────────────────────────────────────────────────────────
+
+long percentThreshold(const float* activity, int16_t* mask,
+                      int nx, int ny, int nz,
+                      int sourceLabel, double pct, int targetLabel)
+{
+    if (!activity || !mask) return -1;
+    const long n = static_cast<long>(nx) * ny * nz;
+
+    double peak = -std::numeric_limits<double>::infinity();
+    if (sourceLabel > 0) {
+        bool any = false;
+        for (long i = 0; i < n; ++i)
+            if (mask[i] == sourceLabel) { peak = std::max(peak, (double)activity[i]); any = true; }
+        if (!any) return -1;
+    } else {
+        for (long i = 0; i < n; ++i) peak = std::max(peak, (double)activity[i]);
+    }
+    if (peak <= 0.0) return -1;
+
+    const double thresh = (pct / 100.0) * peak;
+    long count = 0;
+    for (long i = 0; i < n; ++i)
+        if (activity[i] >= thresh) { mask[i] = static_cast<int16_t>(targetLabel); ++count; }
+    return count;
+}
+
+bool roiRatio(const float* activity, const int16_t* mask, int nx, int ny, int nz,
+              int labelA, int labelB,
+              double& meanA, double& meanB, double& ratio)
+{
+    if (!activity || !mask) return false;
+    const long n = static_cast<long>(nx) * ny * nz;
+    double sumA = 0, sumB = 0; long cA = 0, cB = 0;
+    for (long i = 0; i < n; ++i) {
+        if (mask[i] == labelA) { sumA += activity[i]; ++cA; }
+        if (mask[i] == labelB) { sumB += activity[i]; ++cB; }
+    }
+    if (cA == 0 || cB == 0) return false;
+    meanA = sumA / cA; meanB = sumB / cB;
+    ratio = (std::abs(meanB) > 1e-9) ? meanA / meanB
+                                     : std::numeric_limits<double>::infinity();
+    return true;
+}
+
+bool roiHistogram(const float* activity, const int16_t* mask, int nx, int ny, int nz,
+                  int label, int nbins,
+                  std::vector<double>& counts, double& vmin, double& vmax)
+{
+    if (!activity || !mask || nbins < 1) return false;
+    const long n = static_cast<long>(nx) * ny * nz;
+    vmin =  std::numeric_limits<double>::infinity();
+    vmax = -std::numeric_limits<double>::infinity();
+    long total = 0;
+    for (long i = 0; i < n; ++i)
+        if (mask[i] == label) {
+            vmin = std::min(vmin, (double)activity[i]);
+            vmax = std::max(vmax, (double)activity[i]);
+            ++total;
+        }
+    if (total == 0) return false;
+    if (vmax - vmin < 1e-9) vmax = vmin + 1.0;
+
+    counts.assign(nbins, 0.0);
+    const double span = vmax - vmin;
+    for (long i = 0; i < n; ++i)
+        if (mask[i] == label) {
+            int b = (int)((activity[i] - vmin) / span * nbins);
+            if (b < 0) b = 0; if (b >= nbins) b = nbins - 1;
+            counts[b] += 1.0;
+        }
+    return true;
+}
+
 } // namespace SUV

@@ -120,6 +120,7 @@ set(SOURCES
     src/gui/DicomTagWidget.cpp
     src/gui/ImageListWidget.cpp
     src/gui/TacWidget.cpp
+    src/gui/BarsWidget.cpp
 )
 
 set(HEADERS
@@ -138,6 +139,7 @@ set(HEADERS
     src/gui/ImageListWidget.h
     src/gui/TacWidget.h
     src/gui/BgWorker.h
+    src/gui/BarsWidget.h
 )
 
 add_executable(roisa ${SOURCES} ${HEADERS})

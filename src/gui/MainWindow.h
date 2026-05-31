@@ -42,6 +42,10 @@ private slots:
     void onSuvAutofill(int activityIdx);
     void onSuvExport();
     void onTacCompute(int label, int activityIdx);
+    // Analysis tab
+    void onPercentThreshold(int sourceLabel, double pct, int targetLabel);
+    void onRoiRatio(int labelA, int labelB);
+    void onRoiHist(int label);
 
 private:
     // ── Multi-image state ─────────────────────────────────────────────────────

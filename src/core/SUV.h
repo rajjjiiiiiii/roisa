@@ -57,4 +57,24 @@ std::vector<double> tac(const std::vector<const float*>& frames,
                         const int16_t* mask, int nx, int ny, int nz,
                         int label, double suvFactor);
 
+// ── ROI analysis ────────────────────────────────────────────────────────────────
+
+/// PERCIST-style threshold: write `targetLabel` into `mask` for all voxels whose
+/// `activity` ≥ pct% of the peak (peak = max within `sourceLabel`, or whole image
+/// when sourceLabel == 0).  Returns the voxel count written, or -1 on empty source.
+long percentThreshold(const float* activity, int16_t* mask,
+                      int nx, int ny, int nz,
+                      int sourceLabel, double pct, int targetLabel);
+
+/// (meanA, meanB, ratio) for two labels.  Returns false if either is empty.
+bool roiRatio(const float* activity, const int16_t* mask, int nx, int ny, int nz,
+              int labelA, int labelB,
+              double& meanA, double& meanB, double& ratio);
+
+/// Histogram of `activity` within `label` (nbins bins between min and max).
+/// Returns false if the label is empty.
+bool roiHistogram(const float* activity, const int16_t* mask, int nx, int ny, int nz,
+                  int label, int nbins,
+                  std::vector<double>& counts, double& vmin, double& vmax);
+
 } // namespace SUV

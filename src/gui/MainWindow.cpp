@@ -193,6 +193,9 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_toolPanel, &ToolPanel::suvAutofillRequested, this, &MainWindow::onSuvAutofill);
     connect(m_toolPanel, &ToolPanel::suvExportRequested,   this, &MainWindow::onSuvExport);
     connect(m_toolPanel, &ToolPanel::tacComputeRequested,  this, &MainWindow::onTacCompute);
+    connect(m_toolPanel, &ToolPanel::percentThresholdRequested, this, &MainWindow::onPercentThreshold);
+    connect(m_toolPanel, &ToolPanel::roiRatioRequested,    this, &MainWindow::onRoiRatio);
+    connect(m_toolPanel, &ToolPanel::roiHistRequested,     this, &MainWindow::onRoiHist);
 
     connect(m_imageList, &ImageListWidget::removeRequested,
             this, &MainWindow::removeImage);
@@ -863,4 +866,73 @@ void MainWindow::onTacCompute(int label, int activityIdx)
                     .arg(label).arg(tacResult->size()));
         },
         "Computing time-activity curve…");
+}
+
+// ── Analysis ────────────────────────────────────────────────────────────────────
+
+// Returns the activity image at `idx` resampled onto the REF grid (or REF itself).
+static ROIVolume::FloatPtr activityOnRefGrid(
+        const std::vector<std::unique_ptr<ROIVolume>>& vols, int idx, ROIVolume* ref)
+{
+    if (idx <= 0 || idx >= (int)vols.size()) return ref->displayImage();
+    return vols[idx]->resampleDisplayTo(ref);
+}
+
+void MainWindow::onPercentThreshold(int sourceLabel, double pct, int targetLabel)
+{
+    ROIVolume* ref = refVol();
+    if (!ref || !ref->isLoaded()) { statusBar()->showMessage("Load a reference first."); return; }
+    ROIVolume::FloatPtr actImg = activityOnRefGrid(m_volumes, m_toolPanel->activityIndex(), ref);
+    if (!actImg) { statusBar()->showMessage("No activity image available."); return; }
+
+    ref->pushUndoAll();
+    const long count = SUV::percentThreshold(
+        actImg->GetBufferPointer(), ref->maskImage()->GetBufferPointer(),
+        ref->nx(), ref->ny(), ref->nz(), sourceLabel, pct, targetLabel);
+    if (count < 0) {
+        statusBar()->showMessage("Percent threshold: source region empty or non-positive peak.");
+        return;
+    }
+    ref->notifyChange();
+    rebuildFusion();
+    m_toolPanel->refreshStats();
+    statusBar()->showMessage(
+        QString("Percent threshold: %1 voxels ≥ %2% of peak → label %3.")
+            .arg(count).arg(pct, 0, 'f', 0).arg(targetLabel));
+}
+
+void MainWindow::onRoiRatio(int labelA, int labelB)
+{
+    ROIVolume* ref = refVol();
+    if (!ref || !ref->isLoaded()) return;
+    ROIVolume::FloatPtr actImg = activityOnRefGrid(m_volumes, m_toolPanel->activityIndex(), ref);
+    if (!actImg) return;
+    double mA, mB, ratio;
+    if (!SUV::roiRatio(actImg->GetBufferPointer(), ref->maskImage()->GetBufferPointer(),
+                       ref->nx(), ref->ny(), ref->nz(), labelA, labelB, mA, mB, ratio)) {
+        m_toolPanel->setRoiRatioResult(QString("Label %1 or %2 is empty.").arg(labelA).arg(labelB));
+        return;
+    }
+    m_toolPanel->setRoiRatioResult(
+        QString("mean(L%1)=%2   mean(L%3)=%4\nratio A/B = %5")
+            .arg(labelA).arg(mA, 0, 'g', 4).arg(labelB).arg(mB, 0, 'g', 4)
+            .arg(ratio, 0, 'f', 3));
+    statusBar()->showMessage(QString("ROI ratio L%1/L%2 = %3").arg(labelA).arg(labelB).arg(ratio, 0, 'f', 3));
+}
+
+void MainWindow::onRoiHist(int label)
+{
+    ROIVolume* ref = refVol();
+    if (!ref || !ref->isLoaded()) return;
+    ROIVolume::FloatPtr actImg = activityOnRefGrid(m_volumes, m_toolPanel->activityIndex(), ref);
+    if (!actImg) return;
+    std::vector<double> counts; double vmin, vmax;
+    if (!SUV::roiHistogram(actImg->GetBufferPointer(), ref->maskImage()->GetBufferPointer(),
+                           ref->nx(), ref->ny(), ref->nz(), label, 64, counts, vmin, vmax)) {
+        m_toolPanel->setRoiHist({}, 0., 1., QString("Label %1: empty").arg(label));
+        statusBar()->showMessage(QString("Label %1 is empty.").arg(label));
+        return;
+    }
+    m_toolPanel->setRoiHist(counts, vmin, vmax, QString("Label %1 histogram").arg(label));
+    statusBar()->showMessage(QString("Histogram of label %1.").arg(label));
 }
