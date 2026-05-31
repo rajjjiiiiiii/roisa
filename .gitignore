@@ -20,6 +20,9 @@ Makefile
 # macOS
 .DS_Store
 .AppleDouble
+# Finder / cloud-sync conflict copies, e.g. "MainWindow 2.cpp"
+* [0-9].*
+* copy.*
 
 # IDEs
 .vscode/
