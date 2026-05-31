@@ -4,10 +4,13 @@
 #include "OrthoViewer.h"
 #include "SeriesBrowser.h"
 #include "ToolPanel.h"
+#include "BgWorker.h"
 #include "../core/ROIAlgorithms.h"
 #include "../core/SUV.h"
 
+#include <QThread>
 #include <fstream>
+#include <memory>
 #include <set>
 
 #include <QAction>
@@ -129,7 +132,7 @@ MainWindow::MainWindow(QWidget* parent)
         rebuildFusion();
     });
 
-    // ── Registration operator ───────────────────────────────────────────────
+    // ── Registration operator (runs on a background thread) ──────────────────
     connect(m_toolPanel, &ToolPanel::registerRequested, this,
             [this](int movingIdx, const QString& mode, int iters){
         ROIVolume* ref = refVol();
@@ -137,17 +140,28 @@ MainWindow::MainWindow(QWidget* parent)
         if (movingIdx < 1 || movingIdx >= (int)m_volumes.size()) {
             m_toolPanel->setRegStatus("Invalid moving image."); return; }
         const int m = (mode == "affine") ? 1 : (mode == "deformable") ? 2 : 0;
-        m_toolPanel->setRegStatus(QString("Registering IN%1 (%2)… please wait")
+        ROIVolume* mv = m_volumes[movingIdx].get();
+        // Snapshot immutable source images on the GUI thread; mutate on done.
+        ROIVolume::FloatPtr moving = mv->ensureBackupAndMovingSource();
+        ROIVolume::FloatPtr fixed  = ref->displayImage();
+        auto result = std::make_shared<ROIVolume::FloatPtr>();
+        m_toolPanel->setRegStatus(QString("Registering IN%1 (%2)… working in background")
                                   .arg(movingIdx).arg(mode));
-        statusBar()->showMessage(QString("Registering IN%1 to REF (%2)…").arg(movingIdx).arg(mode));
-        QApplication::setOverrideCursor(Qt::WaitCursor);
-        QApplication::processEvents();
-        const bool ok = m_volumes[movingIdx]->registerTo(ref, m, iters);
-        QApplication::restoreOverrideCursor();
-        m_toolPanel->setRegStatus(ok
-            ? QString("IN%1 registered to REF (%2). Now aligned in fusion.").arg(movingIdx).arg(mode)
-            : QString("Registration of IN%1 failed — see console.").arg(movingIdx));
-        rebuildFusion();
+        runBg(
+            [=]{ *result = ROIVolume::registerImages(moving, fixed, m, iters); },
+            [this, mv, result, movingIdx, mode]{
+                if (*result) {
+                    mv->applyRegisteredImage(*result);
+                    m_toolPanel->setRegStatus(
+                        QString("IN%1 registered to REF (%2). Now aligned in fusion.")
+                            .arg(movingIdx).arg(mode));
+                } else {
+                    m_toolPanel->setRegStatus(
+                        QString("Registration of IN%1 failed — see console.").arg(movingIdx));
+                }
+                rebuildFusion();
+            },
+            QString("Registering IN%1 to REF (%2)…").arg(movingIdx).arg(mode));
     });
 
     connect(m_toolPanel, &ToolPanel::manualTransformRequested, this,
@@ -702,6 +716,40 @@ void MainWindow::onMouseReleased()
     m_inStroke = false;
 }
 
+// ── Background-task runner ──────────────────────────────────────────────────────
+
+void MainWindow::runBg(std::function<void()> work, std::function<void()> onDone,
+                       const QString& busyMsg)
+{
+    if (m_bgBusy || m_toolPanel->isSegRunning()) {
+        statusBar()->showMessage("Busy — wait for the current operation to finish.");
+        return;
+    }
+    m_bgBusy = true;
+    m_toolPanel->setBusy(true);
+    statusBar()->showMessage(busyMsg);
+
+    auto* thread = new QThread(this);
+    auto* worker = new BgWorker(std::move(work));
+    worker->moveToThread(thread);
+    auto onDonePtr = std::make_shared<std::function<void()>>(std::move(onDone));
+
+    connect(thread, &QThread::started, worker, &BgWorker::run);
+    connect(worker, &BgWorker::done, this, [this, thread, onDonePtr]{
+        m_bgBusy = false; m_toolPanel->setBusy(false);
+        (*onDonePtr)();
+        thread->quit();
+    });
+    connect(worker, &BgWorker::failed, this, [this, thread](const QString& msg){
+        m_bgBusy = false; m_toolPanel->setBusy(false);
+        statusBar()->showMessage("Operation failed: " + msg);
+        thread->quit();
+    });
+    connect(thread, &QThread::finished, worker, &QObject::deleteLater);
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
+}
+
 // ── Quantification ──────────────────────────────────────────────────────────────
 
 void MainWindow::onSuvCompute(int activityIdx)
@@ -709,35 +757,40 @@ void MainWindow::onSuvCompute(int activityIdx)
     ROIVolume* ref = refVol();
     if (!ref || !ref->isLoaded()) { statusBar()->showMessage("Load a reference first."); return; }
 
-    ROIVolume::FloatPtr actImg;
-    if (activityIdx <= 0 || activityIdx >= (int)m_volumes.size())
-        actImg = ref->displayImage();
-    else
-        actImg = m_volumes[activityIdx]->resampleDisplayTo(ref);
-    if (!actImg) { statusBar()->showMessage("No activity image available."); return; }
-
-    const float*   act = actImg->GetBufferPointer();
+    // Snapshot read-only inputs on the GUI thread.
+    ROIVolume* actVol = (activityIdx <= 0 || activityIdx >= (int)m_volumes.size())
+                        ? ref : m_volumes[activityIdx].get();
     const int16_t* msk = ref->maskImage()->GetBufferPointer();
     const int nx = ref->nx(), ny = ref->ny(), nz = ref->nz();
     const double sp = ref->voxelSpacingMm();
     const double f  = SUV::factor(m_toolPanel->suvParams());
+    auto rows = std::make_shared<std::vector<ROISUVStats>>();
 
-    std::set<int> labels;
-    const long n = static_cast<long>(nx) * ny * nz;
-    for (long i = 0; i < n; ++i) if (msk[i] > 0) labels.insert(msk[i]);
-
-    std::vector<ROISUVStats> rows;
-    for (int lbl : labels) {
-        ROISUVStats st;
-        if (SUV::roiStats(act, msk, nx, ny, nz, lbl, sp, sp, sp, f, st))
-            rows.push_back(st);
-    }
-    m_toolPanel->setQuantResults(rows);
-    statusBar()->showMessage(
-        QString("SUV computed for %1 ROI(s) on %2  (factor %3)")
-            .arg(rows.size())
-            .arg(activityIdx == 0 ? "REF" : QString("IN%1").arg(activityIdx))
-            .arg(f, 0, 'e', 4));
+    runBg(
+        [=]{
+            ROIVolume::FloatPtr actImg = (actVol == ref)
+                ? actVol->displayImage()
+                : actVol->resampleDisplayTo(ref);        // heavy resample off-thread
+            if (!actImg) return;
+            const float* act = actImg->GetBufferPointer();
+            std::set<int> labels;
+            const long n = static_cast<long>(nx) * ny * nz;
+            for (long i = 0; i < n; ++i) if (msk[i] > 0) labels.insert(msk[i]);
+            for (int lbl : labels) {
+                ROISUVStats st;
+                if (SUV::roiStats(act, msk, nx, ny, nz, lbl, sp, sp, sp, f, st))
+                    rows->push_back(st);
+            }
+        },
+        [this, rows, activityIdx, f]{
+            m_toolPanel->setQuantResults(*rows);
+            statusBar()->showMessage(
+                QString("SUV computed for %1 ROI(s) on %2  (factor %3)")
+                    .arg(rows->size())
+                    .arg(activityIdx == 0 ? "REF" : QString("IN%1").arg(activityIdx))
+                    .arg(f, 0, 'e', 4));
+        },
+        "Computing SUV…");
 }
 
 void MainWindow::onSuvAutofill(int activityIdx)
@@ -778,26 +831,36 @@ void MainWindow::onTacCompute(int label, int activityIdx)
     ROIVolume* ref = refVol();
     if (!ref || !ref->isLoaded()) return;
 
-    // Frames = the input images (dynamic series), each on the REF grid.
-    std::vector<ROIVolume::FloatPtr> hold;     // keep images alive
-    std::vector<const float*>        frames;
-    for (int i = 1; i < (int)m_volumes.size(); ++i) {
-        auto img = m_volumes[i]->resampleDisplayTo(ref);
-        if (img) { hold.push_back(img); frames.push_back(img->GetBufferPointer()); }
-    }
-    if (frames.empty()) {            // fall back to REF as a single frame
-        hold.push_back(ref->displayImage());
-        frames.push_back(ref->displayImage()->GetBufferPointer());
-    }
+    const int16_t* msk = ref->maskImage()->GetBufferPointer();
+    const int nx = ref->nx(), ny = ref->ny(), nz = ref->nz();
     const double f = SUV::factor(m_toolPanel->suvParams());
-    auto tac = SUV::tac(frames, ref->maskImage()->GetBufferPointer(),
-                        ref->nx(), ref->ny(), ref->nz(), label, f);
-    if (tac.empty()) {
-        statusBar()->showMessage(QString("Label %1 not present in the ROI mask.").arg(label));
-        m_toolPanel->setTac({});
-        return;
-    }
-    m_toolPanel->setTac(tac, "SUVmean");
-    statusBar()->showMessage(
-        QString("TAC plotted for label %1 across %2 frame(s).").arg(label).arg(tac.size()));
+    const int nInputs = (int)m_volumes.size();
+    auto tacResult = std::make_shared<std::vector<double>>();
+
+    runBg(
+        [=]{
+            std::vector<ROIVolume::FloatPtr> hold;        // keep images alive
+            std::vector<const float*>        frames;
+            for (int i = 1; i < nInputs; ++i) {
+                auto img = m_volumes[i]->resampleDisplayTo(ref);  // heavy off-thread
+                if (img) { hold.push_back(img); frames.push_back(img->GetBufferPointer()); }
+            }
+            if (frames.empty()) {
+                hold.push_back(ref->displayImage());
+                frames.push_back(ref->displayImage()->GetBufferPointer());
+            }
+            *tacResult = SUV::tac(frames, msk, nx, ny, nz, label, f);
+        },
+        [this, tacResult, label]{
+            if (tacResult->empty()) {
+                statusBar()->showMessage(QString("Label %1 not present in the ROI mask.").arg(label));
+                m_toolPanel->setTac({});
+                return;
+            }
+            m_toolPanel->setTac(*tacResult, "SUVmean");
+            statusBar()->showMessage(
+                QString("TAC plotted for label %1 across %2 frame(s).")
+                    .arg(label).arg(tacResult->size()));
+        },
+        "Computing time-activity curve…");
 }

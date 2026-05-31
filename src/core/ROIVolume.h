@@ -122,6 +122,19 @@ public:
     /// The pre-registration image is kept so resetRegistration() can restore it.
     bool registerTo(const ROIVolume* fixed, int mode, int iterations = 100);
 
+    /// Pure registration: aligns `moving` to `fixed`, returns the resampled
+    /// image (null on failure).  No shared state — safe to call off-thread.
+    static FloatPtr registerImages(FloatPtr moving, FloatPtr fixed,
+                                   int mode, int iterations);
+
+    /// Ensure the pre-registration backup exists and return the source image to
+    /// register (the backup).  Call on the GUI thread before threaded work.
+    FloatPtr ensureBackupAndMovingSource();
+
+    /// Adopt a registered/resampled image as this volume's display image.
+    /// Call on the GUI thread after threaded registration completes.
+    void applyRegisteredImage(FloatPtr img);
+
     /// Apply a manual rigid transform (mm translation + degree rotation) to the
     /// original moving image and resample into `fixed`'s display grid.
     bool applyManualTransform(const ROIVolume* fixed,
@@ -184,6 +197,10 @@ public:
     void setChangeCallback(std::function<void()> cb) { m_onChange = std::move(cb); }
     void notifyChange();
 
+    /// Suspend change-callback firing (e.g. during background segmentation so
+    /// algorithms don't touch the GUI from a worker thread).
+    void setNotifyEnabled(bool e) { m_notifyEnabled = e; }
+
 private:
     FloatPtr m_origImg;      // original image (full resolution, for save)
     FloatPtr m_displayImg;   // float32, isotropically resampled to TARGET_SIZE
@@ -198,6 +215,7 @@ private:
 
     std::deque<UndoEntry>  m_history;
     std::function<void()>  m_onChange;
+    bool                   m_notifyEnabled{true};
 
     // Internal helpers
     FloatPtr loadNiftiOrMeta(const std::string& path);

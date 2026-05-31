@@ -618,7 +618,9 @@ bool ROIVolume::undo()
 
 void ROIVolume::notifyChange()
 {
-    if (m_onChange) m_onChange();
+    // Suppressed during background work so algorithms don't fire GUI updates
+    // from a worker thread; the caller refreshes on the GUI thread afterwards.
+    if (m_notifyEnabled && m_onChange) m_onChange();
 }
 
 // ── Reset window ──────────────────────────────────────────────────────────────
@@ -982,19 +984,16 @@ typename TTx::Pointer registerLinear(RegPtr fixed, RegPtr moving, int iters)
 
 } // namespace
 
-bool ROIVolume::registerTo(const ROIVolume* fixed, int mode, int iterations)
+// Pure registration — no shared state mutated, safe to run off-thread.
+ROIVolume::FloatPtr ROIVolume::registerImages(FloatPtr movingImg, FloatPtr fixedImg,
+                                              int mode, int iterations)
 {
-    if (!m_displayImg || !fixed || !fixed->m_displayImg) return false;
+    if (!movingImg || !fixedImg) return nullptr;
     try {
-        if (!m_displayBackup) m_displayBackup = m_displayImg;  // keep for Reset
-        RegPtr movingImg = m_displayBackup;
-        RegPtr fixedImg  = fixed->m_displayImg;
-        RegPtr result;
-
         if (mode == 1) {                       // Affine
             auto tx = registerLinear<itk::AffineTransform<double,3>>(
                           fixedImg, movingImg, iterations);
-            result = resampleByTransform(movingImg, fixedImg, tx);
+            return resampleByTransform(movingImg, fixedImg, tx);
         }
         else if (mode == 2) {                  // Deformable (rigid pre-align + BSpline)
             auto rigid = registerLinear<itk::Euler3DTransform<double>>(
@@ -1043,24 +1042,42 @@ bool ROIVolume::registerTo(const ROIVolume* fixed, int mode, int iterations)
             reg->SetSmoothingSigmasPerLevel(sigma);
             reg->Update();
 
-            result = resampleByTransform(preAligned, fixedImg, btx);
+            return resampleByTransform(preAligned, fixedImg, btx);
         }
-        else {                                 // Rigid (Euler3D)
-            auto tx = registerLinear<itk::Euler3DTransform<double>>(
-                          fixedImg, movingImg, iterations);
-            result = resampleByTransform(movingImg, fixedImg, tx);
-        }
-
-        m_displayImg = result;
-        m_mask = createMask(m_displayImg);   // moving masks are unused in fusion
-        m_history.clear();
-        notifyChange();
-        return true;
+        // Rigid (Euler3D)
+        auto tx = registerLinear<itk::Euler3DTransform<double>>(
+                      fixedImg, movingImg, iterations);
+        return resampleByTransform(movingImg, fixedImg, tx);
     }
     catch (const std::exception& e) {
-        std::cerr << "registerTo error: " << e.what() << "\n";
-        return false;
+        std::cerr << "registerImages error: " << e.what() << "\n";
+        return nullptr;
     }
+}
+
+ROIVolume::FloatPtr ROIVolume::ensureBackupAndMovingSource()
+{
+    if (m_displayImg && !m_displayBackup) m_displayBackup = m_displayImg;
+    return m_displayBackup;
+}
+
+void ROIVolume::applyRegisteredImage(FloatPtr img)
+{
+    if (!img) return;
+    m_displayImg = img;
+    m_mask = createMask(m_displayImg);   // moving masks are unused in fusion
+    m_history.clear();
+    notifyChange();
+}
+
+bool ROIVolume::registerTo(const ROIVolume* fixed, int mode, int iterations)
+{
+    if (!m_displayImg || !fixed || !fixed->m_displayImg) return false;
+    FloatPtr moving = ensureBackupAndMovingSource();
+    FloatPtr result = registerImages(moving, fixed->m_displayImg, mode, iterations);
+    if (!result) return false;
+    applyRegisteredImage(result);
+    return true;
 }
 
 bool ROIVolume::applyManualTransform(const ROIVolume* fixed,

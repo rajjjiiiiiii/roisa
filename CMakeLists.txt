@@ -137,6 +137,7 @@ set(HEADERS
     src/gui/DicomTagWidget.h
     src/gui/ImageListWidget.h
     src/gui/TacWidget.h
+    src/gui/BgWorker.h
 )
 
 add_executable(roisa ${SOURCES} ${HEADERS})

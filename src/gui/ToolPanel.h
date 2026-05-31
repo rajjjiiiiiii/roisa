@@ -50,6 +50,10 @@ public:
     void setMovingImages(const QList<QPair<QString,int>>& items);
     void setRegStatus(const QString& msg);
 
+    // ── Responsiveness: disable heavy-op buttons while busy ─────────────────────
+    void setBusy(bool busy);
+    bool isSegRunning() const { return m_segRunning; }
+
     // ── Quantification: SUV params / activity dropdown / results / TAC ───────────
     void       setQuantImages(const QList<QPair<QString,int>>& items);
     int        activityIndex() const;
@@ -186,6 +190,9 @@ private:
     // ── Segment tab — Morph ────────────────────────────────────────────────────
     QSlider*     m_erodeDilateSlider{nullptr};
     QPushButton* m_applyMorphBtn{nullptr};
+
+    // Background segmentation
+    bool m_segRunning{false};
 
     // ── Paint tab — Edit ───────────────────────────────────────────────────────
     QPushButton* m_undoBtn{nullptr};

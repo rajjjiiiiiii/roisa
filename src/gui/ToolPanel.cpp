@@ -1,6 +1,7 @@
 // ToolPanel.cpp — Operator-based control panel implementation
 
 #include "ToolPanel.h"
+#include "BgWorker.h"
 #include "DicomTagWidget.h"
 #include "HistogramWidget.h"
 #include "OrthoViewer.h"
@@ -8,8 +9,10 @@
 #include "../core/ROIAlgorithms.h"
 #include "../core/ROIVolume.h"
 
+#include <QThread>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 #include <QApplication>
 #include <QCheckBox>
@@ -1288,43 +1291,92 @@ void ToolPanel::applySegmentation()
     int method=m_segMethodCombo->currentData().toInt();
     for(int sm:SEED_METHODS) if(sm==method&&!m_seedSet){
         setStatus("Switch to Segment tool and click on image to set a seed first."); return; }
+    if (m_segRunning) { setStatus("Segmentation already running…"); return; }
     int16_t lbl=static_cast<int16_t>(activeLabel());
-    try {
-        switch(method){
-        case 0:{int axis=-1,si=-1;
-            if(m_thresh.sliceOnly->isChecked()){
-                int ac=m_thresh.sliceAxis->currentIndex();
-                axis=(ac==0)?2:(ac==1)?1:0;
-                if(m_viewer) si=(axis==2)?m_viewer->z():(axis==1)?m_viewer->y():m_viewer->x();
-            }
-            ROIAlgorithms::thresholdSegment(*m_vol,(float)m_thresh.lower->value(),(float)m_thresh.upper->value(),lbl,axis,si); break;}
-        case 1: ROIAlgorithms::regionGrow(*m_vol,m_seedX,m_seedY,m_seedZ,(float)m_grow.tolerance->value(),lbl); break;
-        case 2: ROIAlgorithms::connectedThreshold(*m_vol,m_seedX,m_seedY,m_seedZ,(float)m_thresh.lower->value(),(float)m_thresh.upper->value(),lbl); break;
-        case 3: ROIAlgorithms::neighborhoodConnected(*m_vol,m_seedX,m_seedY,m_seedZ,(float)m_nbr.lower->value(),(float)m_nbr.upper->value(),m_nbr.radius->value(),lbl); break;
-        case 4: ROIAlgorithms::confidenceConnected(*m_vol,m_seedX,m_seedY,m_seedZ,(float)m_conf.multiplier->value(),m_conf.iterations->value(),m_conf.radius->value(),lbl); break;
-        case 5:{int ac=m_ff2d.axis->currentIndex(); int ax=(ac==0)?2:(ac==1)?1:0;
-            ROIAlgorithms::floodFill2D(*m_vol,m_seedX,m_seedY,m_seedZ,ax,(float)m_ff2d.tolerance->value(),lbl); break;}
-        case 6: ROIAlgorithms::fastMarching(*m_vol,m_seedX,m_seedY,m_seedZ,(float)m_fm.stoppingValue->value(),lbl); break;
-        case 7: ROIAlgorithms::otsuThreshold(*m_vol,lbl,m_otsu.bins->value(),m_otsu.classes->value()); break;
-        case 8: ROIAlgorithms::kMeansCluster(*m_vol,m_kmeans.k->value(),lbl); break;
-        case 9: ROIAlgorithms::levelSetRefine(*m_vol,lbl,m_ls.iterations->value(),(float)m_ls.propagation->value(),(float)m_ls.curvature->value()); break;
-        case 10: ROIAlgorithms::watershed(*m_vol,lbl); break;
-        case 11: ROIAlgorithms::roiConnected(*m_vol,m_seedX,m_seedY,m_seedZ,lbl,lbl); break;
-        case 12: ROIAlgorithms::removeSmallComponents(*m_vol,lbl,m_minSize.minSize->value()); break;
-        case 13: ROIAlgorithms::connectedComponents(*m_vol,lbl,m_cc.maxComp->value()); break;
-        case 14:{int ac=m_fill.axis->currentIndex(); int ax=(ac==0)?-1:(ac==1)?2:(ac==2)?1:0;
-            ROIAlgorithms::fillHoles(*m_vol,lbl,ax); break;}
-        case 15: ROIAlgorithms::makeShell(*m_vol,lbl,m_shell.thickness->value()); break;
-        case 16: ROIAlgorithms::lowPassSmooth(*m_vol,lbl,(float)m_smooth.sigma->value()); break;
-        case 17:{int16_t lb=static_cast<int16_t>(m_bool.labelB->currentData().toInt());
-            ROIAlgorithms::booleanOp(*m_vol,lbl,lb,m_bool.op->currentText().toStdString(),lbl); break;}
-        default: setStatus("Unknown method."); return;
+    ROIVolume* vol = m_vol;
+
+    // Capture all parameters now (GUI thread) into a self-contained operation.
+    std::function<void()> op;
+    switch(method){
+    case 0:{int axis=-1,si=-1;
+        if(m_thresh.sliceOnly->isChecked()){
+            int ac=m_thresh.sliceAxis->currentIndex();
+            axis=(ac==0)?2:(ac==1)?1:0;
+            if(m_viewer) si=(axis==2)?m_viewer->z():(axis==1)?m_viewer->y():m_viewer->x();
         }
-        setStatus("Done."); emit refreshRequested();
-    } catch(const std::exception& e){
-        setStatus(QString("Error: %1").arg(e.what()));
-        QMessageBox::critical(this,"Segmentation error",e.what());
+        float lo=(float)m_thresh.lower->value(), hi=(float)m_thresh.upper->value();
+        op=[=]{ ROIAlgorithms::thresholdSegment(*vol,lo,hi,lbl,axis,si); }; break;}
+    case 1:{float tol=(float)m_grow.tolerance->value(); int sx=m_seedX,sy=m_seedY,sz=m_seedZ;
+        op=[=]{ ROIAlgorithms::regionGrow(*vol,sx,sy,sz,tol,lbl); }; break;}
+    case 2:{float lo=(float)m_thresh.lower->value(),hi=(float)m_thresh.upper->value(); int sx=m_seedX,sy=m_seedY,sz=m_seedZ;
+        op=[=]{ ROIAlgorithms::connectedThreshold(*vol,sx,sy,sz,lo,hi,lbl); }; break;}
+    case 3:{float lo=(float)m_nbr.lower->value(),hi=(float)m_nbr.upper->value(); int r=m_nbr.radius->value(),sx=m_seedX,sy=m_seedY,sz=m_seedZ;
+        op=[=]{ ROIAlgorithms::neighborhoodConnected(*vol,sx,sy,sz,lo,hi,r,lbl); }; break;}
+    case 4:{float mul=(float)m_conf.multiplier->value(); int it=m_conf.iterations->value(),r=m_conf.radius->value(),sx=m_seedX,sy=m_seedY,sz=m_seedZ;
+        op=[=]{ ROIAlgorithms::confidenceConnected(*vol,sx,sy,sz,mul,it,r,lbl); }; break;}
+    case 5:{int ac=m_ff2d.axis->currentIndex(); int ax=(ac==0)?2:(ac==1)?1:0; float tol=(float)m_ff2d.tolerance->value(); int sx=m_seedX,sy=m_seedY,sz=m_seedZ;
+        op=[=]{ ROIAlgorithms::floodFill2D(*vol,sx,sy,sz,ax,tol,lbl); }; break;}
+    case 6:{float sv=(float)m_fm.stoppingValue->value(); int sx=m_seedX,sy=m_seedY,sz=m_seedZ;
+        op=[=]{ ROIAlgorithms::fastMarching(*vol,sx,sy,sz,sv,lbl); }; break;}
+    case 7:{int b=m_otsu.bins->value(),c=m_otsu.classes->value();
+        op=[=]{ ROIAlgorithms::otsuThreshold(*vol,lbl,b,c); }; break;}
+    case 8:{int k=m_kmeans.k->value();
+        op=[=]{ ROIAlgorithms::kMeansCluster(*vol,k,lbl); }; break;}
+    case 9:{int it=m_ls.iterations->value(); float pr=(float)m_ls.propagation->value(),cu=(float)m_ls.curvature->value();
+        op=[=]{ ROIAlgorithms::levelSetRefine(*vol,lbl,it,pr,cu); }; break;}
+    case 10: op=[=]{ ROIAlgorithms::watershed(*vol,lbl); }; break;
+    case 11:{int sx=m_seedX,sy=m_seedY,sz=m_seedZ;
+        op=[=]{ ROIAlgorithms::roiConnected(*vol,sx,sy,sz,lbl,lbl); }; break;}
+    case 12:{int ms=m_minSize.minSize->value();
+        op=[=]{ ROIAlgorithms::removeSmallComponents(*vol,lbl,ms); }; break;}
+    case 13:{int mc=m_cc.maxComp->value();
+        op=[=]{ ROIAlgorithms::connectedComponents(*vol,lbl,mc); }; break;}
+    case 14:{int ac=m_fill.axis->currentIndex(); int ax=(ac==0)?-1:(ac==1)?2:(ac==2)?1:0;
+        op=[=]{ ROIAlgorithms::fillHoles(*vol,lbl,ax); }; break;}
+    case 15:{int th=m_shell.thickness->value();
+        op=[=]{ ROIAlgorithms::makeShell(*vol,lbl,th); }; break;}
+    case 16:{float sg=(float)m_smooth.sigma->value();
+        op=[=]{ ROIAlgorithms::lowPassSmooth(*vol,lbl,sg); }; break;}
+    case 17:{int16_t lb=static_cast<int16_t>(m_bool.labelB->currentData().toInt());
+        std::string oper=m_bool.op->currentText().toStdString();
+        op=[=]{ ROIAlgorithms::booleanOp(*vol,lbl,lb,oper,lbl); }; break;}
+    default: setStatus("Unknown method."); return;
     }
+
+    // Run the segmentation on a background thread so the UI stays responsive.
+    // Suspend the volume's change callback so algorithms don't fire GUI
+    // updates from the worker thread; we refresh on the GUI thread on done.
+    m_segRunning = true;
+    setBusy(true);
+    setStatus("Running…");
+    vol->setNotifyEnabled(false);
+    auto* thread = new QThread(this);
+    auto* worker = new BgWorker(std::move(op));
+    worker->moveToThread(thread);
+    connect(thread, &QThread::started, worker, &BgWorker::run);
+    connect(worker, &BgWorker::done, this, [this, thread, vol]{
+        vol->setNotifyEnabled(true);
+        m_segRunning = false; setBusy(false);
+        setStatus("Done."); emit refreshRequested();
+        thread->quit();
+    });
+    connect(worker, &BgWorker::failed, this, [this, thread, vol](const QString& msg){
+        vol->setNotifyEnabled(true);
+        m_segRunning = false; setBusy(false);
+        setStatus(QString("Error: %1").arg(msg));
+        QMessageBox::critical(this, "Segmentation error", msg);
+        thread->quit();
+    });
+    connect(thread, &QThread::finished, worker, &QObject::deleteLater);
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
+}
+
+void ToolPanel::setBusy(bool busy)
+{
+    QPushButton* btns[] = { m_applySegBtn, m_regRunBtn, m_manApplyBtn,
+                            m_manResetBtn, m_quantComputeBtn, m_tacBtn };
+    for (QPushButton* b : btns) if (b) b->setEnabled(!busy);
 }
 
 // ── Morph / Edit / I/O callbacks ──────────────────────────────────────────────

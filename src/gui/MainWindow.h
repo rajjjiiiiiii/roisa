@@ -3,6 +3,7 @@
 
 #include <QMainWindow>
 #include <QSettings>
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -79,6 +80,12 @@ private:
     void installRefChangeCallback();
     void rebuildFusion();       // REF base + each visible input as an overlay
     void pushFusionTarget();    // load selected layer params into ToolPanel
+
+    // Background-task runner — keeps the UI responsive on large volumes.
+    // `work` runs on a thread; `onDone` runs on the GUI thread afterward.
+    void runBg(std::function<void()> work, std::function<void()> onDone,
+               const QString& busyMsg);
+    bool m_bgBusy{false};
     void brushFootprint(int cx, int cy, int cz, int radius, int shape,
                         int viewAxis, bool twoD,
                         std::vector<std::array<int,3>>& out) const;
