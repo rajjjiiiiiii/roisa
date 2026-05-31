@@ -71,6 +71,8 @@ private:
     void removeImage(int idx);
     void syncImageList();
     void installRefChangeCallback();
+    void rebuildFusion();       // REF base + each visible input as an overlay
+    void pushFusionTarget();    // load selected layer params into ToolPanel
     void brushFootprint(int cx, int cy, int cz, int radius, int shape,
                         int viewAxis, bool twoD,
                         std::vector<std::array<int,3>>& out) const;

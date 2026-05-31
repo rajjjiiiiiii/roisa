@@ -174,14 +174,50 @@ void SliceView::paintEvent(QPaintEvent*)
     float range = vmax - vmin;
     if (range < 1e-6f) range = 1e-6f;
 
-    // Build RGB32 image
+    // ── Extract aligned overlay slices (each on the REF grid) ──────────────────
+    int NX = m_vol->nx(), NY = m_vol->ny(), NZ = m_vol->nz();
+    struct OvSlice { const std::vector<float>* data; int cm; float a, wmin, wrange; };
+    std::vector<std::vector<float>> ovBufs;
+    std::vector<OvSlice>            ovSlices;
+    ovBufs.reserve(m_overlays.size());
+    for (const auto& ov : m_overlays) {
+        if (!ov.arr) continue;
+        std::vector<float> s;
+        ROIVolume::sliceFromBuffer(ov.arr->GetBufferPointer(),
+                                   NX, NY, NZ, m_axis, m_sliceIdx, s);
+        if (static_cast<int>(s.size()) != rows*cols) continue;
+        ovBufs.push_back(std::move(s));
+        float wr = ov.wmax - ov.wmin; if (wr < 1e-6f) wr = 1e-6f;
+        ovSlices.push_back({ &ovBufs.back(), ov.colormap, ov.alpha, ov.wmin, wr });
+    }
+
+    // Build RGB32 image: base → overlays → mask
     QImage img(cols, rows, QImage::Format_RGB32);
     for (int row = 0; row < rows; ++row) {
         auto* line = reinterpret_cast<QRgb*>(img.scanLine(row));
         for (int col = 0; col < cols; ++col) {
-            float t = (m_intensityBuf[row*cols+col] - vmin) / range;
             int ir, ig, ib;
-            applyColormap(m_colormap, t, ir, ig, ib);
+            if (m_baseVisible) {
+                float t = (m_intensityBuf[row*cols+col] - vmin) / range;
+                applyColormap(m_colormap, t, ir, ig, ib);
+            } else {
+                ir = ig = ib = 0;
+            }
+
+            // ── Fusion overlays — intensity-modulated alpha (PET-on-CT look) ──
+            for (const auto& ov : ovSlices) {
+                float on = ((*ov.data)[row*cols+col] - ov.wmin) / ov.wrange;
+                if (on <= 0.f) continue;
+                if (on > 1.f)  on = 1.f;
+                int orr, ogg, obb;
+                applyColormap(ov.cm, on, orr, ogg, obb);
+                float eff = ov.a * on;
+                ir = (int)(ir*(1-eff) + orr*eff);
+                ig = (int)(ig*(1-eff) + ogg*eff);
+                ib = (int)(ib*(1-eff) + obb*eff);
+            }
+
+            // ── Mask label overlay (topmost) ─────────────────────────────────
             int16_t lbl = m_maskBuf[row*cols+col];
             if (lbl > 0 && lbl < static_cast<int16_t>(m_labelVis.size()) && m_labelVis[lbl]) {
                 auto [lr,lg,lb,la] = labelColor(lbl);
@@ -190,7 +226,7 @@ void SliceView::paintEvent(QPaintEvent*)
                 ig = std::min(255,(int)(ig*(1-a)+lg*a));
                 ib = std::min(255,(int)(ib*(1-a)+lb*a));
             }
-            line[col] = qRgb(ir, ig, ib);
+            line[col] = qRgb(std::min(255,ir), std::min(255,ig), std::min(255,ib));
         }
     }
 

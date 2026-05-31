@@ -37,8 +37,17 @@ public:
     void refreshStats();
     void onVolumeLoaded();
 
+    // ── Fusion: load the selected layer's display params into the controls ──────
+    void setFusionTarget(const QString& name, int colormap, float alpha,
+                         float wmin, float wmax, bool isBase, bool baseVisible);
+
 signals:
     void refreshRequested();
+    // Fusion controls target the layer selected in the Images panel
+    void fusionColormapChanged(int cm);
+    void fusionAlphaChanged(float alpha);
+    void fusionWindowChanged(float lo, float hi);
+    void baseVisibleToggled(bool on);
 
 public slots:
     void onPositionChanged(int x, int y, int z);
@@ -182,6 +191,16 @@ private:
     // ── Data Manager — Histogram ───────────────────────────────────────────────
     HistogramWidget* m_histWidget{nullptr};
 
+    // ── Data Manager — Fusion (per selected layer) ─────────────────────────────
+    QLabel*         m_fusionTargetLabel{nullptr};
+    QComboBox*      m_fusionColormap{nullptr};
+    QSlider*        m_fusionAlpha{nullptr};
+    QLabel*         m_fusionAlphaLabel{nullptr};
+    QDoubleSpinBox* m_fusionWmin{nullptr};
+    QDoubleSpinBox* m_fusionWmax{nullptr};
+    QCheckBox*      m_baseVisibleCheck{nullptr};
+    bool            m_fusionLoading{false};
+
     // ── DICOM Tags tab ─────────────────────────────────────────────────────────
     DicomTagWidget*  m_tagWidget{nullptr};
 
@@ -197,6 +216,7 @@ private:
     QGroupBox* buildNavGroup();
     QGroupBox* buildWindowLevelGroup();
     QGroupBox* buildDisplayGroup();
+    QGroupBox* buildFusionGroup();
     QGroupBox* buildSegGroup();
     QGroupBox* buildMorphGroup();
     QGroupBox* buildEditGroup();

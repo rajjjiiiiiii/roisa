@@ -62,6 +62,21 @@ public:
     void  setWindow(float lo, float hi) { m_vmin = lo; m_vmax = hi; }
     void  resetWindow();   // recompute from 1%/99% percentiles + notifyChange
 
+    // ── Fusion display state (per-layer) ───────────────────────────────────────
+    int   colormap()    const { return m_colormap; }
+    void  setColormap(int cm) { m_colormap = cm; }
+    float fusionAlpha() const { return m_fusionAlpha; }
+    void  setFusionAlpha(float a) { m_fusionAlpha = a; }
+
+    /// Resample this volume's display image onto `ref`'s display grid so the
+    /// two line up for fusion overlay.  Returns null if either isn't loaded.
+    FloatPtr resampleDisplayTo(const ROIVolume* ref) const;
+
+    /// Extract an axis slice from a raw display-space buffer (same layout as
+    /// getIntensitySlice).  Used to pull aligned overlay slices for fusion.
+    static void sliceFromBuffer(const float* buf, int NX, int NY, int NZ,
+                                int axis, int idx, std::vector<float>& dst);
+
     // ── Spacing ───────────────────────────────────────────────────────────────
     double voxelSpacingMm() const;   // isotropic spacing of display volume
 
@@ -160,6 +175,8 @@ private:
 
     float       m_vmin{0.f};
     float       m_vmax{1.f};
+    int         m_colormap{0};       // 0=gray 1=hot 2=cool 3=viridis
+    float       m_fusionAlpha{0.6f}; // opacity when composited as an overlay
     std::string m_firstDicomFile;
 
     std::deque<UndoEntry>  m_history;

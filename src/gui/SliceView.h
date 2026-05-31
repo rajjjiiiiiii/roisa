@@ -18,6 +18,14 @@ class SliceView : public QWidget
 public:
     enum Colormap { GRAY=0, HOT=1, COOL=2, VIRIDIS=3 };
 
+    // ── Fusion overlay layer (intensity already resampled to REF grid) ──────────
+    struct FusionLayer {
+        ROIVolume::FloatPtr arr;          // display image on the REF grid
+        int   colormap{HOT};
+        float alpha{0.6f};
+        float wmin{0.f}, wmax{1.f};
+    };
+
     // ── Measurement types ──────────────────────────────────────────────────────
     enum class MeasureMode { None=0, Ruler=1, Angle=2, Circle=3 };
 
@@ -46,7 +54,10 @@ public:
     // ── Display options ────────────────────────────────────────────────────────
     void setInterpolate(bool on)       { m_interpolate = on; update(); }
     void setColormap(int cm)           { m_colormap = cm; update(); }
+    int  colormap() const              { return m_colormap; }
     void setOverlayAlpha(float alpha)  { m_overlayAlpha = alpha; update(); }
+    void setBaseVisible(bool on)       { m_baseVisible = on; update(); }
+    void setOverlays(std::vector<FusionLayer> ov) { m_overlays = std::move(ov); update(); }
     void setLabelVisible(int lbl, bool v)  { if(lbl>=0&&lbl<256) { m_labelVis[lbl]=v; update(); } }
     void setAllLabelsVisible(bool v)   { m_labelVis.fill(v); update(); }
     void setShowInfoOverlay(bool on)   { m_showInfoOverlay = on; update(); }
@@ -111,6 +122,8 @@ private:
     int   m_colormap{GRAY};
     float m_overlayAlpha{1.0f};
     bool  m_showInfoOverlay{true};
+    bool  m_baseVisible{true};                 // REF base layer composited?
+    std::vector<FusionLayer> m_overlays;       // fusion overlays on REF grid
     std::array<bool,256> m_labelVis;   // label 0..255 visibility
 
     mutable std::vector<float>   m_intensityBuf;

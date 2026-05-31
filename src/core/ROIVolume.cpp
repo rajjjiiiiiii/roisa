@@ -411,18 +411,16 @@ int ROIVolume::sliceCols(int axis) const
     }
 }
 
-void ROIVolume::getIntensitySlice(int axis, int idx,
-                                   std::vector<float>& dst) const
+void ROIVolume::sliceFromBuffer(const float* buf, int NX, int NY, int NZ,
+                                 int axis, int idx, std::vector<float>& dst)
 {
-    if (!m_displayImg) return;
-    const float* buf = m_displayImg->GetBufferPointer();
-    int NX = nx(), NY = ny(), NZ = nz();
-    int rows = sliceRows(axis), cols = sliceCols(axis);
+    if (!buf) { dst.clear(); return; }
+    // Slice dims mirror sliceRows/sliceCols:
+    //   axis 0 (sag): rows=NY cols=NZ   axis 1 (cor): rows=NX cols=NZ
+    //   axis 2 (axi): rows=NX cols=NY
+    int rows = (axis == 0) ? NY : NX;
+    int cols = (axis == 2) ? NY : NZ;
     dst.resize(rows * cols);
-
-    // axis 0 (sagittal x=idx): pixel[row=iy, col=iz] = buf[idx + NX*iy + NX*NY*iz]
-    // axis 1 (coronal  y=idx): pixel[row=ix, col=iz] = buf[ix  + NX*idx + NX*NY*iz]
-    // axis 2 (axial    z=idx): pixel[row=ix, col=iy] = buf[ix  + NX*iy  + NX*NY*idx]
     for (int row = 0; row < rows; ++row) {
         for (int col = 0; col < cols; ++col) {
             int lin = 0;
@@ -432,6 +430,14 @@ void ROIVolume::getIntensitySlice(int axis, int idx,
             dst[row * cols + col] = buf[lin];
         }
     }
+}
+
+void ROIVolume::getIntensitySlice(int axis, int idx,
+                                   std::vector<float>& dst) const
+{
+    if (!m_displayImg) return;
+    sliceFromBuffer(m_displayImg->GetBufferPointer(),
+                    nx(), ny(), nz(), axis, idx, dst);
 }
 
 void ROIVolume::getMaskSlice(int axis, int idx,
@@ -452,6 +458,44 @@ void ROIVolume::getMaskSlice(int axis, int idx,
             dst[row * cols + col] = buf[lin];
         }
     }
+}
+
+// ── Fusion: resample this display image onto another volume's grid ─────────────
+
+ROIVolume::FloatPtr ROIVolume::resampleDisplayTo(const ROIVolume* ref) const
+{
+    if (!m_displayImg || !ref || !ref->m_displayImg) return nullptr;
+
+    FloatPtr refImg = ref->m_displayImg;
+
+    // Fast path: identical grid → reuse as-is
+    auto a = m_displayImg->GetLargestPossibleRegion().GetSize();
+    auto b = refImg->GetLargestPossibleRegion().GetSize();
+    if (a == b
+        && m_displayImg->GetSpacing() == refImg->GetSpacing()
+        && m_displayImg->GetOrigin()  == refImg->GetOrigin())
+        return m_displayImg;
+
+    using LinearInterp = itk::LinearInterpolateImageFunction<FloatImage3, double>;
+    using IdentityTx   = itk::IdentityTransform<double, 3>;
+    using Resample     = itk::ResampleImageFilter<FloatImage3, FloatImage3>;
+
+    auto resample = Resample::New();
+    resample->SetInput(m_displayImg);
+    resample->SetTransform(IdentityTx::New());
+    resample->SetInterpolator(LinearInterp::New());
+    resample->SetOutputOrigin(refImg->GetOrigin());
+    resample->SetOutputSpacing(refImg->GetSpacing());
+    resample->SetOutputDirection(refImg->GetDirection());
+    resample->SetSize(refImg->GetLargestPossibleRegion().GetSize());
+    resample->SetDefaultPixelValue(0.0f);
+    try {
+        resample->Update();
+    } catch (const std::exception& e) {
+        std::cerr << "[resampleDisplayTo] " << e.what() << std::endl;
+        return nullptr;
+    }
+    return resample->GetOutput();
 }
 
 // ── Mask bulk write ───────────────────────────────────────────────────────────

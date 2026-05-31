@@ -281,6 +281,32 @@ void OrthoViewer::setOverlayAlpha(float a)
     m_axiView->setOverlayAlpha(a);
 }
 
+void OrthoViewer::setOverlays(const std::vector<SliceView::FusionLayer>& ov)
+{
+    m_sagView->setOverlays(ov);
+    m_corView->setOverlays(ov);
+    m_axiView->setOverlays(ov);
+}
+
+void OrthoViewer::setBaseVisible(bool on)
+{
+    m_sagView->setBaseVisible(on);
+    m_corView->setBaseVisible(on);
+    m_axiView->setBaseVisible(on);
+}
+
+void OrthoViewer::setBaseColormap(int cm)
+{
+    m_sagView->setColormap(cm);
+    m_corView->setColormap(cm);
+    m_axiView->setColormap(cm);
+}
+
+int OrthoViewer::baseColormap() const
+{
+    return m_axiView->colormap();
+}
+
 void OrthoViewer::setAllLabelsVisible(bool v)
 {
     m_sagView->setAllLabelsVisible(v);

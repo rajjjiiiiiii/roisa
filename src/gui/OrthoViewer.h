@@ -11,7 +11,8 @@
 #include <QWidget>
 #include "../core/ROIVolume.h"
 
-class SliceView;
+#include "SliceView.h"
+
 class VtkView;
 class QTimer;
 class QSplitter;
@@ -71,6 +72,12 @@ public:
     void setAllLabelsVisible(bool v);
     void setShowInfoOverlay(bool on);
     void resetAllZoom();
+
+    // ── Fusion passthroughs ────────────────────────────────────────────────────
+    void setOverlays(const std::vector<SliceView::FusionLayer>& ov);
+    void setBaseVisible(bool on);
+    void setBaseColormap(int cm);
+    int  baseColormap() const;
 
     // ── Cine / loop player ────────────────────────────────────────────────────
     void playCine();

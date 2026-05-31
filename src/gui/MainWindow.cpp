@@ -98,10 +98,31 @@ MainWindow::MainWindow(QWidget* parent)
                 if (idx < 0 || idx >= (int)m_volVisible.size()) return;
                 m_volVisible[idx] = on;
                 m_imageList->setEnabled(idx, on);
-                // If toggling off the currently active image, fall back to REF
-                if (!on && idx == m_activeVol)
-                    activateImage(0);
+                rebuildFusion();   // recompose with the new visibility
             });
+
+    // ── Fusion controls (Data Manager) target the selected layer ───────────
+    connect(m_toolPanel, &ToolPanel::fusionColormapChanged, this, [this](int cm){
+        if (m_activeVol == 0) m_viewer->setBaseColormap(cm);
+        else if (m_activeVol < (int)m_volumes.size())
+            m_volumes[m_activeVol]->setColormap(cm);
+        rebuildFusion();
+    });
+    connect(m_toolPanel, &ToolPanel::fusionAlphaChanged, this, [this](float a){
+        if (m_activeVol >= 0 && m_activeVol < (int)m_volumes.size())
+            m_volumes[m_activeVol]->setFusionAlpha(a);
+        rebuildFusion();
+    });
+    connect(m_toolPanel, &ToolPanel::fusionWindowChanged, this, [this](float lo, float hi){
+        if (m_activeVol >= 0 && m_activeVol < (int)m_volumes.size())
+            m_volumes[m_activeVol]->setWindow(lo, hi);
+        rebuildFusion();
+    });
+    connect(m_toolPanel, &ToolPanel::baseVisibleToggled, this, [this](bool on){
+        if (!m_volVisible.empty()) m_volVisible[0] = on;
+        m_imageList->setEnabled(0, on);
+        rebuildFusion();
+    });
 
     connect(m_imageList, &ImageListWidget::removeRequested,
             this, &MainWindow::removeImage);
@@ -388,12 +409,57 @@ void MainWindow::afterLoad()
     m_toolPanel->setVolume(refVol());
     m_toolPanel->setViewer(m_viewer);
     m_viewer->setVolume(refVol());
+    m_viewer->setBaseVisible(true);
+    m_viewer->setOverlays({});       // fresh REF — no overlays yet
     m_viewer->refreshHistogram();
     syncImageList();
+    pushFusionTarget();
     statusBar()->showMessage(
         QString("Loaded REF: %1 × %2 × %3 voxels  |  spacing %.2f mm")
             .arg(refVol()->nx()).arg(refVol()->ny()).arg(refVol()->nz())
             .arg(refVol()->voxelSpacingMm()));
+}
+
+// ── Fusion ──────────────────────────────────────────────────────────────────────
+
+void MainWindow::rebuildFusion()
+{
+    ROIVolume* ref = refVol();
+    if (!ref || !ref->isLoaded()) return;
+
+    // Base layer is always REF (owns geometry + mask)
+    m_viewer->setVolume(ref);
+    m_viewer->setBaseVisible(m_volVisible.empty() ? true : m_volVisible[0]);
+
+    std::vector<SliceView::FusionLayer> overlays;
+    for (int i = 1; i < (int)m_volumes.size(); ++i) {
+        if (i >= (int)m_volVisible.size() || !m_volVisible[i]) continue;
+        ROIVolume* v = m_volumes[i].get();
+        auto arr = v->resampleDisplayTo(ref);
+        if (!arr) continue;
+        SliceView::FusionLayer layer;
+        layer.arr      = arr;
+        layer.colormap = v->colormap();
+        layer.alpha    = v->fusionAlpha();
+        layer.wmin     = v->vmin();
+        layer.wmax     = v->vmax();
+        overlays.push_back(std::move(layer));
+    }
+    m_viewer->setOverlays(overlays);
+    m_viewer->refresh();
+}
+
+void MainWindow::pushFusionTarget()
+{
+    int idx = m_activeVol;
+    if (idx < 0 || idx >= (int)m_volumes.size()) return;
+    ROIVolume* v = m_volumes[idx].get();
+    bool isBase  = (idx == 0);
+    QString name = isBase ? "REF" : QString("IN%1").arg(idx);
+    int cm = isBase ? m_viewer->baseColormap() : v->colormap();
+    m_toolPanel->setFusionTarget(
+        name, cm, v->fusionAlpha(), v->vmin(), v->vmax(), isBase,
+        m_volVisible.empty() ? true : m_volVisible[0]);
 }
 
 // ── Load — additional input image ─────────────────────────────────────────────
@@ -408,13 +474,16 @@ void MainWindow::loadAdditionalImage(const QString& path)
         statusBar()->showMessage("Add input image failed.");
         return;
     }
+    // New overlays default to a 'hot' colormap so they stand out on REF
+    vol->setColormap(SliceView::HOT);
     m_volumes.push_back(std::move(vol));
     m_volVisible.push_back(true);
     m_volNames.push_back(path);
     addRecentFile(path);
     syncImageList();
+    rebuildFusion();
     statusBar()->showMessage(
-        QString("Added IN%1: %2").arg(m_volumes.size()-1)
+        QString("Added IN%1: %2 — fused over REF").arg(m_volumes.size()-1)
                                  .arg(QFileInfo(path).fileName()));
 }
 
@@ -422,15 +491,16 @@ void MainWindow::loadAdditionalImage(const QString& path)
 
 void MainWindow::activateImage(int idx)
 {
+    // Select a layer for editing — does NOT change what is composited
+    // (REF base + all visible inputs always render together).
     if (idx < 0 || idx >= (int)m_volumes.size()) return;
     m_activeVol = idx;
-    m_viewer->setVolume(m_volumes[idx].get());
-    m_viewer->refresh();
     m_imageList->setActive(idx);
+    pushFusionTarget();
     statusBar()->showMessage(
         idx == 0
-        ? "Viewing: REF — ROI operations active"
-        : QString("Viewing: IN%1 — ROI operations always apply to REF").arg(idx));
+        ? "Selected REF (base) — ROI operations apply here"
+        : QString("Selected IN%1 — adjust its colormap / opacity / window").arg(idx));
 }
 
 void MainWindow::removeImage(int idx)
@@ -452,9 +522,9 @@ void MainWindow::removeImage(int idx)
     else if (m_activeVol == idx)
         m_activeVol = 0;
 
-    m_viewer->setVolume(m_volumes[m_activeVol].get());
-    m_viewer->refresh();
     syncImageList();
+    rebuildFusion();
+    pushFusionTarget();
 }
 
 void MainWindow::syncImageList()

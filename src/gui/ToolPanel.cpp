@@ -7,6 +7,9 @@
 #include "../core/ROIAlgorithms.h"
 #include "../core/ROIVolume.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
@@ -136,6 +139,7 @@ QWidget* ToolPanel::buildNavViewerOperator()
         m_histWidget->setFixedHeight(90);
         pl->addWidget(m_histWidget);
 
+        pl->addWidget(buildFusionGroup());
         pl->addWidget(buildWindowLevelGroup());
         pl->addWidget(buildDisplayGroup());
         pl->addWidget(build3DGroup());
@@ -254,6 +258,79 @@ QGroupBox* ToolPanel::buildNavGroup()
     connect(m_ySlider,&QSlider::valueChanged,this,&ToolPanel::onNavYChanged);
     connect(m_zSlider,&QSlider::valueChanged,this,&ToolPanel::onNavZChanged);
     return gb;
+}
+
+// ── Fusion group (per selected layer) ──────────────────────────────────────────
+
+QGroupBox* ToolPanel::buildFusionGroup()
+{
+    auto* gb = new QGroupBox("Fusion — selected layer");
+    auto* l  = new QVBoxLayout(gb);
+
+    m_fusionTargetLabel = new QLabel("Selected: REF (base)");
+    m_fusionTargetLabel->setStyleSheet(
+        "color:#7ec8ff; font-size:10px; font-weight:bold;");
+    l->addWidget(m_fusionTargetLabel);
+
+    auto* cmRow = new QHBoxLayout; cmRow->addWidget(new QLabel("Colormap"));
+    m_fusionColormap = new QComboBox;
+    m_fusionColormap->addItems({"Gray","Hot","Cool","Viridis"});
+    cmRow->addWidget(m_fusionColormap, 1); l->addLayout(cmRow);
+
+    auto* aRow = new QHBoxLayout; aRow->addWidget(new QLabel("Opacity"));
+    m_fusionAlpha = new QSlider(Qt::Horizontal);
+    m_fusionAlpha->setRange(0,100); m_fusionAlpha->setValue(60);
+    m_fusionAlphaLabel = new QLabel("60%"); m_fusionAlphaLabel->setFixedWidth(34);
+    aRow->addWidget(m_fusionAlpha, 1); aRow->addWidget(m_fusionAlphaLabel);
+    l->addLayout(aRow);
+
+    auto* wRow = new QHBoxLayout; wRow->addWidget(new QLabel("Win"));
+    m_fusionWmin = dbl(-1e6, 1e6, 0.0, 1.0, 1);
+    m_fusionWmax = dbl(-1e6, 1e6, 1.0, 1.0, 1);
+    wRow->addWidget(m_fusionWmin); wRow->addWidget(m_fusionWmax);
+    l->addLayout(wRow);
+
+    m_baseVisibleCheck = new QCheckBox("Show reference (base) layer");
+    m_baseVisibleCheck->setChecked(true);
+    l->addWidget(m_baseVisibleCheck);
+
+    connect(m_fusionColormap, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int i){ if(!m_fusionLoading) emit fusionColormapChanged(i); });
+    connect(m_fusionAlpha, &QSlider::valueChanged, this, [this](int v){
+        m_fusionAlphaLabel->setText(QString("%1%").arg(v));
+        if(!m_fusionLoading) emit fusionAlphaChanged(v/100.f);
+    });
+    auto winChanged = [this]{
+        if(!m_fusionLoading)
+            emit fusionWindowChanged((float)m_fusionWmin->value(),
+                                     (float)m_fusionWmax->value());
+    };
+    connect(m_fusionWmin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [winChanged](double){ winChanged(); });
+    connect(m_fusionWmax, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [winChanged](double){ winChanged(); });
+    connect(m_baseVisibleCheck, &QCheckBox::toggled, this, [this](bool on){
+        if(!m_fusionLoading) emit baseVisibleToggled(on);
+    });
+    return gb;
+}
+
+void ToolPanel::setFusionTarget(const QString& name, int colormap, float alpha,
+                                 float wmin, float wmax, bool isBase,
+                                 bool baseVisible)
+{
+    if (!m_fusionColormap) return;
+    m_fusionLoading = true;
+    m_fusionTargetLabel->setText(
+        QString("Selected: %1%2").arg(name, isBase ? "  (base)" : "  (overlay)"));
+    m_fusionColormap->setCurrentIndex(std::max(0, std::min(3, colormap)));
+    m_fusionAlpha->setValue((int)std::lround(alpha * 100));
+    m_fusionAlphaLabel->setText(QString("%1%").arg((int)std::lround(alpha*100)));
+    m_fusionWmin->setValue(wmin);
+    m_fusionWmax->setValue(wmax);
+    m_fusionAlpha->setEnabled(!isBase);
+    m_baseVisibleCheck->setChecked(baseVisible);
+    m_fusionLoading = false;
 }
 
 // ── Segmentation group ────────────────────────────────────────────────────────
