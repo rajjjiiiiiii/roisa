@@ -1,4 +1,4 @@
-// ToolPanel.cpp — Control panel implementation
+// ToolPanel.cpp — Operator-based control panel implementation
 
 #include "ToolPanel.h"
 #include "DicomTagWidget.h"
@@ -10,20 +10,25 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDir>
 #include <QDoubleSpinBox>
+#include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
+#include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPixmap>
+#include <QProcess>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSlider>
 #include <QSpinBox>
 #include <QStackedWidget>
-#include <QFrame>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -38,9 +43,8 @@ static QSpinBox* intSpin(int lo,int hi,int val){
     auto* s=new QSpinBox; s->setRange(lo,hi); s->setValue(val); return s;
 }
 
-// ── Constructor ───────────────────────────────────────────────────────────────
+// ── Helper: wrap groups in a scrollable tab page ──────────────────────────────
 
-// ── Helper: wrap a list of groups in a scrollable tab page ────────────────────
 static QScrollArea* makeTabPage(std::initializer_list<QGroupBox*> groups)
 {
     auto* page = new QWidget;
@@ -55,80 +59,159 @@ static QScrollArea* makeTabPage(std::initializer_list<QGroupBox*> groups)
     return sa;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Constructor
+// ═══════════════════════════════════════════════════════════════════════════════
+
 ToolPanel::ToolPanel(QWidget* parent) : QWidget(parent)
 {
     setMinimumWidth(280); setMaximumWidth(340);
     auto* ml = new QVBoxLayout(this);
-    ml->setContentsMargins(2,2,2,2); ml->setSpacing(2);
+    ml->setContentsMargins(2, 2, 2, 2);
+    ml->setSpacing(4);
 
-    m_tabs = new QTabWidget(this);
-    m_tabs->setDocumentMode(true);
+    // ── Operator selector drop-down ───────────────────────────────────────────
+    m_operatorCombo = new QComboBox(this);
+    m_operatorCombo->addItems({"Navigation Viewer", "ROI", "Measure"});
+    m_operatorCombo->setStyleSheet(
+        "QComboBox{"
+        "  background:#1c2a38; color:#9fcfe8; font-weight:bold; font-size:12px;"
+        "  padding:5px 10px; border:1px solid #2e5070; border-radius:4px;"
+        "}"
+        "QComboBox::drop-down{ border:none; width:20px; }"
+        "QComboBox QAbstractItemView{"
+        "  background:#1c2a38; color:#9fcfe8;"
+        "  selection-background-color:#2a5070;"
+        "}");
+    ml->addWidget(m_operatorCombo);
 
-    // Tab 0 — Paint: brush tool, navigation, edit buttons
-    m_tabs->addTab(makeTabPage({buildToolGroup(),
-                                buildNavGroup(),
-                                buildEditGroup()}),
-                   "Paint");
+    auto* sep = new QFrame(this);
+    sep->setFrameShape(QFrame::HLine);
+    sep->setStyleSheet("border: 1px solid #2a3a4a;");
+    ml->addWidget(sep);
 
-    // Tab 1 — Segment: segmentation methods + morph
-    m_tabs->addTab(makeTabPage({buildSegGroup(),
-                                buildMorphGroup()}),
-                   "Segment");
+    // ── Operator page stack ───────────────────────────────────────────────────
+    m_operatorStack = new QStackedWidget(this);
+    m_operatorStack->addWidget(buildNavViewerOperator());   // 0
+    m_operatorStack->addWidget(buildROIOperator());         // 1
+    m_operatorStack->addWidget(buildMeasureOperator());     // 2
+    ml->addWidget(m_operatorStack, 1);
 
-    // Tab 2 — Display: histogram, W/L, colormap / alpha / zoom, 3-D VTK controls
+    connect(m_operatorCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &ToolPanel::onOperatorChanged);
+
+    // ── Status bar ────────────────────────────────────────────────────────────
+    m_statusLabel = new QLabel(this);
+    m_statusLabel->setWordWrap(true);
+    m_statusLabel->setStyleSheet("color:#aaa; font-size:10px; padding:2px 4px;");
+    ml->addWidget(m_statusLabel);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Operator page builders
+// ═══════════════════════════════════════════════════════════════════════════════
+
+QWidget* ToolPanel::buildNavViewerOperator()
+{
+    auto* w = new QWidget;
+    auto* l = new QVBoxLayout(w);
+    l->setContentsMargins(0,0,0,0); l->setSpacing(0);
+
+    auto* tabs = new QTabWidget(w);
+    tabs->setDocumentMode(true);
+
+    // ── Tab 0: Viewer — Navigation sliders + Cine player + Export ─────────────
+    tabs->addTab(makeTabPage({buildNavGroup(),
+                              buildCineGroup(),
+                              buildExportGroup()}),
+                 "Viewer");
+
+    // ── Tab 1: Data Manager — Histogram + W/L + Display + 3D ─────────────────
     {
         auto* page = new QWidget;
         auto* pl   = new QVBoxLayout(page);
         pl->setContentsMargins(4,4,4,4); pl->setSpacing(4);
 
-        // Histogram at the top for quick W/L visual feedback
         m_histWidget = new HistogramWidget(page);
         m_histWidget->setFixedHeight(90);
         pl->addWidget(m_histWidget);
 
         pl->addWidget(buildWindowLevelGroup());
         pl->addWidget(buildDisplayGroup());
-        pl->addWidget(buildCineGroup());
         pl->addWidget(build3DGroup());
         pl->addStretch();
 
         auto* sa = new QScrollArea;
-        sa->setWidget(page);
-        sa->setWidgetResizable(true);
+        sa->setWidget(page); sa->setWidgetResizable(true);
         sa->setFrameShape(QFrame::NoFrame);
-        m_tabs->addTab(sa, "Display");
+        tabs->addTab(sa, "Data Manager");
     }
 
-    // Tab 3 — Labels: centroid/propagate/3D, stats table
-    m_tabs->addTab(makeTabPage({buildLabelToolsGroup(),
-                                buildStatsGroup()}),
-                   "Labels");
-
-    // Tab 4 — I/O: save/load mask, registration
-    m_tabs->addTab(makeTabPage({buildIOGroup(),
-                                buildRegistrationGroup()}),
-                   "I/O");
-
-    // Tab 5 — Measure: measurement tool type selector
-    m_tabs->addTab(makeTabPage({buildMeasureGroup()}), "Measure");
-
-    // Tab 6 — Tags: DICOM / volume header inspector
+    // ── Tab 2: DICOM Tags ─────────────────────────────────────────────────────
     {
         auto* page = new QWidget;
         auto* pl   = new QVBoxLayout(page);
         pl->setContentsMargins(0,0,0,0); pl->setSpacing(0);
         m_tagWidget = new DicomTagWidget(page);
         pl->addWidget(m_tagWidget);
-        m_tabs->addTab(page, "Tags");
+        tabs->addTab(page, "DICOM Tags");
     }
 
-    ml->addWidget(m_tabs, 1);
-
-    m_statusLabel = new QLabel(this);
-    m_statusLabel->setWordWrap(true);
-    m_statusLabel->setStyleSheet("color:#aaa;font-size:10px;padding:2px;");
-    ml->addWidget(m_statusLabel);
+    l->addWidget(tabs);
+    return w;
 }
+
+QWidget* ToolPanel::buildROIOperator()
+{
+    auto* w = new QWidget;
+    auto* l = new QVBoxLayout(w);
+    l->setContentsMargins(0,0,0,0); l->setSpacing(0);
+
+    auto* tabs = new QTabWidget(w);
+    tabs->setDocumentMode(true);
+
+    // ── Tab 0: Paint — brush tool + edit actions ───────────────────────────────
+    tabs->addTab(makeTabPage({buildToolGroup(), buildEditGroup()}), "Paint");
+
+    // ── Tab 1: Segment — algorithm selector + morph ───────────────────────────
+    tabs->addTab(makeTabPage({buildSegGroup(), buildMorphGroup()}), "Segment");
+
+    // ── Tab 2: Labels — centroid/propagate/stats ──────────────────────────────
+    tabs->addTab(makeTabPage({buildLabelToolsGroup(), buildStatsGroup()}), "Labels");
+
+    // ── Tab 3: Save — mask I/O + registration ────────────────────────────────
+    tabs->addTab(makeTabPage({buildIOGroup(), buildRegistrationGroup()}), "Save");
+
+    // Auto-switch tool mode to "Segment" when the Segment tab becomes active
+    connect(tabs, &QTabWidget::currentChanged, this, [this, tabs](int idx) {
+        if (!m_toolCombo || !m_viewer) return;
+        if (idx == 1) {
+            // Segment tab: force segment tool so clicks set seeds
+            QSignalBlocker b(m_toolCombo);
+            m_toolCombo->setCurrentIndex(2);   // "Segment"
+            m_viewer->setMeasureMode(0);
+        } else if (idx == 0) {
+            // Paint tab: restore whatever tool is selected and clear measure
+            onToolModeChanged(m_toolCombo->currentIndex());
+        }
+    });
+
+    l->addWidget(tabs);
+    return w;
+}
+
+QWidget* ToolPanel::buildMeasureOperator()
+{
+    auto* w = new QWidget;
+    auto* l = new QVBoxLayout(w);
+    l->setContentsMargins(0,0,0,0); l->setSpacing(0);
+    l->addWidget(makeTabPage({buildMeasureGroup()}));
+    return w;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Group builders
+// ═══════════════════════════════════════════════════════════════════════════════
 
 // ── Tool group ────────────────────────────────────────────────────────────────
 
@@ -136,7 +219,8 @@ QGroupBox* ToolPanel::buildToolGroup()
 {
     auto* gb=new QGroupBox("Tool & Label"); auto* l=new QVBoxLayout(gb);
     m_toolCombo=new QComboBox;
-    m_toolCombo->addItems({"Paint","Erase","Segment","Measure"});
+    // "Measure" is a separate operator — only ROI tools here
+    m_toolCombo->addItems({"Paint","Erase","Segment"});
     connect(m_toolCombo,QOverload<int>::of(&QComboBox::currentIndexChanged),
             this,&ToolPanel::onToolModeChanged);
     l->addWidget(m_toolCombo);
@@ -382,174 +466,6 @@ QGroupBox* ToolPanel::buildIOGroup()
     return gb;
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
-
-void ToolPanel::setVolume(ROIVolume* vol)
-{
-    m_vol=vol;
-    if(m_tagWidget) m_tagWidget->setVolume(vol);
-    if(m_histWidget){
-        m_histWidget->setVolume(vol);
-        // Histogram W/L drag → repaint slices
-        connect(m_histWidget, &HistogramWidget::windowChanged, this,
-                [this](float lo, float hi){
-                    if(m_vol) m_vol->setWindow(lo, hi);
-                    emit refreshRequested();
-                }, Qt::UniqueConnection);
-    }
-    if(!vol||!vol->isLoaded()) return;
-    {QSignalBlocker b(m_xSlider); m_xSlider->setMaximum(vol->nx()-1); m_xSlider->setValue(vol->nx()/2); m_xLabel->setText(QString("X %1").arg(vol->nx()/2));}
-    {QSignalBlocker b(m_ySlider); m_ySlider->setMaximum(vol->ny()-1); m_ySlider->setValue(vol->ny()/2); m_yLabel->setText(QString("Y %1").arg(vol->ny()/2));}
-    {QSignalBlocker b(m_zSlider); m_zSlider->setMaximum(vol->nz()-1); m_zSlider->setValue(vol->nz()/2); m_zLabel->setText(QString("Z %1").arg(vol->nz()/2));}
-    float vmin=vol->vmin(), vmax=vol->vmax();
-    m_thresh.lower->setRange(vmin,vmax); m_thresh.lower->setValue(vmin);
-    m_thresh.upper->setRange(vmin,vmax); m_thresh.upper->setValue(vmax);
-    m_nbr.lower->setRange(vmin,vmax);    m_nbr.lower->setValue(vmin);
-    m_nbr.upper->setRange(vmin,vmax);    m_nbr.upper->setValue(vmax);
-    onVolumeLoaded();
-}
-void ToolPanel::setViewer(OrthoViewer* v){
-    m_viewer=v;
-    if(v){
-        // Forward measurement results to the last-result label
-        connect(v, &OrthoViewer::measurementAdded, this,
-                [this](const QString& s){
-                    if(m_lastMeasLabel) m_lastMeasLabel->setText(s);
-                }, Qt::UniqueConnection);
-
-        // ── Cine player ───────────────────────────────────────────────────────
-        connect(m_cinePlayBtn, &QPushButton::toggled, this, [this](bool on){
-            if (!m_viewer) return;
-            if (on) {
-                m_cinePlayBtn->setText("⏹  Stop");
-                m_viewer->setCineFps(m_cineFpsSpin->value());
-                m_viewer->setCineAxis(m_cineAxisCombo->currentIndex());
-                m_viewer->playCine();
-            } else {
-                m_cinePlayBtn->setText("▶  Play");
-                m_viewer->stopCine();
-            }
-        }, Qt::UniqueConnection);
-        connect(m_cineFpsSpin, QOverload<int>::of(&QSpinBox::valueChanged),
-                this, [this](int fps){ if(m_viewer) m_viewer->setCineFps(fps); },
-                Qt::UniqueConnection);
-        connect(m_cineAxisCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-                this, [this](int ax){ if(m_viewer) m_viewer->setCineAxis(ax); },
-                Qt::UniqueConnection);
-
-        // Sync info overlay checkbox with viewer state
-        if (m_infoOverlayCheck)
-            v->setShowInfoOverlay(m_infoOverlayCheck->isChecked());
-    }
-}
-int     ToolPanel::activeLabel() const { return m_labelCombo->currentData().toInt(); }
-QString ToolPanel::toolMode()    const { return m_toolCombo->currentText().toLower(); }
-int     ToolPanel::brushRadius() const { return m_brushRadiusSpin ? m_brushRadiusSpin->value() : 3; }
-int     ToolPanel::brushShape()  const { return m_brushShapeCombo ? m_brushShapeCombo->currentIndex() : 0; }
-bool    ToolPanel::twoDOnly()    const { return m_twoDCheckbox    ? m_twoDCheckbox->isChecked() : false; }
-
-void ToolPanel::onPositionChanged(int x,int y,int z){
-    QSignalBlocker bx(m_xSlider),by(m_ySlider),bz(m_zSlider);
-    m_xSlider->setValue(x); m_xLabel->setText(QString("X %1").arg(x));
-    m_ySlider->setValue(y); m_yLabel->setText(QString("Y %1").arg(y));
-    m_zSlider->setValue(z); m_zLabel->setText(QString("Z %1").arg(z));
-}
-void ToolPanel::onSeedSet(int x,int y,int z){
-    m_seedX=x; m_seedY=y; m_seedZ=z; m_seedSet=true;
-    m_seedLabel->setText(
-        QString("Seed: (%1,%2,%3)  val: %4")
-            .arg(x).arg(y).arg(z)
-            .arg(m_vol?QString::number(m_vol->getIntensity(x,y,z),'f',1):"?"));
-}
-
-void ToolPanel::onNavXChanged(int x){ m_xLabel->setText(QString("X %1").arg(x)); if(m_viewer) m_viewer->setX(x); }
-void ToolPanel::onNavYChanged(int y){ m_yLabel->setText(QString("Y %1").arg(y)); if(m_viewer) m_viewer->setY(y); }
-void ToolPanel::onNavZChanged(int z){ m_zLabel->setText(QString("Z %1").arg(z)); if(m_viewer) m_viewer->setZ(z); }
-void ToolPanel::onSegMethodChanged(int idx){ m_segParamStack->setCurrentIndex(idx); }
-
-// ── Apply segmentation ────────────────────────────────────────────────────────
-
-void ToolPanel::applySegmentation()
-{
-    if(!m_vol||!m_vol->isLoaded()){ setStatus("No image loaded."); return; }
-    static const int SEED_METHODS[]={1,2,3,4,5,6,11};
-    int method=m_segMethodCombo->currentData().toInt();
-    for(int sm:SEED_METHODS) if(sm==method&&!m_seedSet){
-        setStatus("Switch to Segment tool and click on image to set a seed first."); return; }
-    int16_t lbl=static_cast<int16_t>(activeLabel());
-    try {
-        switch(method){
-        case 0:{int axis=-1,si=-1;
-            if(m_thresh.sliceOnly->isChecked()){
-                int ac=m_thresh.sliceAxis->currentIndex();
-                axis=(ac==0)?2:(ac==1)?1:0;
-                if(m_viewer) si=(axis==2)?m_viewer->z():(axis==1)?m_viewer->y():m_viewer->x();
-            }
-            ROIAlgorithms::thresholdSegment(*m_vol,(float)m_thresh.lower->value(),(float)m_thresh.upper->value(),lbl,axis,si); break;}
-        case 1: ROIAlgorithms::regionGrow(*m_vol,m_seedX,m_seedY,m_seedZ,(float)m_grow.tolerance->value(),lbl); break;
-        case 2: ROIAlgorithms::connectedThreshold(*m_vol,m_seedX,m_seedY,m_seedZ,(float)m_thresh.lower->value(),(float)m_thresh.upper->value(),lbl); break;
-        case 3: ROIAlgorithms::neighborhoodConnected(*m_vol,m_seedX,m_seedY,m_seedZ,(float)m_nbr.lower->value(),(float)m_nbr.upper->value(),m_nbr.radius->value(),lbl); break;
-        case 4: ROIAlgorithms::confidenceConnected(*m_vol,m_seedX,m_seedY,m_seedZ,(float)m_conf.multiplier->value(),m_conf.iterations->value(),m_conf.radius->value(),lbl); break;
-        case 5:{int ac=m_ff2d.axis->currentIndex(); int ax=(ac==0)?2:(ac==1)?1:0;
-            ROIAlgorithms::floodFill2D(*m_vol,m_seedX,m_seedY,m_seedZ,ax,(float)m_ff2d.tolerance->value(),lbl); break;}
-        case 6: ROIAlgorithms::fastMarching(*m_vol,m_seedX,m_seedY,m_seedZ,(float)m_fm.stoppingValue->value(),lbl); break;
-        case 7: ROIAlgorithms::otsuThreshold(*m_vol,lbl,m_otsu.bins->value(),m_otsu.classes->value()); break;
-        case 8: ROIAlgorithms::kMeansCluster(*m_vol,m_kmeans.k->value(),lbl); break;
-        case 9: ROIAlgorithms::levelSetRefine(*m_vol,lbl,m_ls.iterations->value(),(float)m_ls.propagation->value(),(float)m_ls.curvature->value()); break;
-        case 10: ROIAlgorithms::watershed(*m_vol,lbl); break;
-        case 11: ROIAlgorithms::roiConnected(*m_vol,m_seedX,m_seedY,m_seedZ,lbl,lbl); break;
-        case 12: ROIAlgorithms::removeSmallComponents(*m_vol,lbl,m_minSize.minSize->value()); break;
-        case 13: ROIAlgorithms::connectedComponents(*m_vol,lbl,m_cc.maxComp->value()); break;
-        case 14:{int ac=m_fill.axis->currentIndex(); int ax=(ac==0)?-1:(ac==1)?2:(ac==2)?1:0;
-            ROIAlgorithms::fillHoles(*m_vol,lbl,ax); break;}
-        case 15: ROIAlgorithms::makeShell(*m_vol,lbl,m_shell.thickness->value()); break;
-        case 16: ROIAlgorithms::lowPassSmooth(*m_vol,lbl,(float)m_smooth.sigma->value()); break;
-        case 17:{int16_t lb=static_cast<int16_t>(m_bool.labelB->currentData().toInt());
-            ROIAlgorithms::booleanOp(*m_vol,lbl,lb,m_bool.op->currentText().toStdString(),lbl); break;}
-        default: setStatus("Unknown method."); return;
-        }
-        setStatus("Done."); emit refreshRequested();
-    } catch(const std::exception& e){
-        setStatus(QString("Error: %1").arg(e.what()));
-        QMessageBox::critical(this,"Segmentation error",e.what());
-    }
-}
-
-// ── Morph / Edit / I/O callbacks ──────────────────────────────────────────────
-
-void ToolPanel::applyMorph(){
-    if(!m_vol) return;
-    int r=m_erodeDilateSlider->value();
-    if(r==0){setStatus("Radius=0, no change.");return;}
-    try{ ROIAlgorithms::morphErodeDilate(*m_vol,(int16_t)activeLabel(),r);
-         emit refreshRequested(); setStatus("Morph applied.");
-    }catch(const std::exception& e){setStatus(QString("Morph error: %1").arg(e.what()));}
-}
-void ToolPanel::onUndo(){ if(m_vol){m_vol->undo(); emit refreshRequested();} }
-void ToolPanel::onClearLabel(){ if(m_vol){m_vol->clearLabel(activeLabel()); emit refreshRequested();} }
-void ToolPanel::onClearAll()  { if(m_vol){m_vol->clearLabel(-1);            emit refreshRequested();} }
-
-void ToolPanel::onSaveMask(){
-    if(!m_vol){setStatus("No image.");return;}
-    QString dir=m_saveDirEdit->text().trimmed();
-    if(dir.isEmpty()){ dir=QFileDialog::getExistingDirectory(this,"Select output directory"); if(dir.isEmpty())return; m_saveDirEdit->setText(dir);}
-    QString file=m_saveFileEdit->text().trimmed(); if(file.isEmpty()) file="roi_mask.nii.gz";
-    QString out=dir+"/"+file;
-    if(m_vol->saveMask(out.toStdString())) setStatus("Saved: "+out);
-    else setStatus("Save failed.");
-}
-void ToolPanel::onLoadMask(){
-    if(!m_vol){setStatus("No image.");return;}
-    QString p=m_loadMaskEdit->text().trimmed(); if(p.isEmpty())return;
-    if(m_vol->loadMask(p.toStdString())){ emit refreshRequested(); setStatus("Mask loaded.");}
-    else setStatus("Load failed.");
-}
-void ToolPanel::setStatus(const QString& msg){ m_statusLabel->setText(msg); }
-
-// ── Constructor: add new groups ───────────────────────────────────────────────
-// (called after ml->addStretch() in constructor — we patch the constructor
-//  by rebuilding the layout order via the group builder methods added below)
-
 // ── Window / Level group ──────────────────────────────────────────────────────
 
 QGroupBox* ToolPanel::buildWindowLevelGroup()
@@ -562,8 +478,6 @@ QGroupBox* ToolPanel::buildWindowLevelGroup()
     row->addWidget(m_wlMinSpin); row->addWidget(m_wlMaxSpin); row->addWidget(autoBtn);
     l->addLayout(row);
 
-    // ── CT / MR presets ───────────────────────────────────────────────────────
-    // Stored as (center, width); min = center - width/2, max = center + width/2.
     static constexpr struct { const char* name; float center, width; } WL_PRESETS[] = {
         {"Brain",            40,    80},
         {"Stroke",            8,    32},
@@ -704,7 +618,383 @@ QGroupBox* ToolPanel::buildRegistrationGroup()
     return gb;
 }
 
-// ── New slot implementations ──────────────────────────────────────────────────
+// ── Cine group ────────────────────────────────────────────────────────────────
+
+QGroupBox* ToolPanel::buildCineGroup()
+{
+    auto* gb = new QGroupBox("Cine / Loop"); auto* l = new QVBoxLayout(gb);
+
+    auto* topRow = new QHBoxLayout;
+    m_cinePlayBtn = new QPushButton("▶  Play");
+    m_cinePlayBtn->setCheckable(true);
+    m_cinePlayBtn->setStyleSheet("QPushButton:checked{background:#245;color:white;}");
+    topRow->addWidget(m_cinePlayBtn);
+    topRow->addWidget(new QLabel("FPS:"));
+    m_cineFpsSpin = new QSpinBox;
+    m_cineFpsSpin->setRange(1, 30); m_cineFpsSpin->setValue(8); m_cineFpsSpin->setMaximumWidth(54);
+    topRow->addWidget(m_cineFpsSpin);
+    l->addLayout(topRow);
+
+    auto* axRow = new QHBoxLayout;
+    axRow->addWidget(new QLabel("Axis:"));
+    m_cineAxisCombo = new QComboBox;
+    m_cineAxisCombo->addItems({"Sagittal (X)", "Coronal (Y)", "Axial (Z)"});
+    m_cineAxisCombo->setCurrentIndex(2);
+    axRow->addWidget(m_cineAxisCombo);
+    l->addLayout(axRow);
+
+    // Connections are wired in setViewer() once the viewer is available
+    return gb;
+}
+
+// ── Export group ──────────────────────────────────────────────────────────────
+
+QGroupBox* ToolPanel::buildExportGroup()
+{
+    auto* gb = new QGroupBox("Export"); auto* l = new QVBoxLayout(gb);
+
+    // ── Snapshots ──────────────────────────────────────────────────────────────
+    l->addWidget(new QLabel("Save snapshot PNG:", gb));
+    auto* snapRow = new QHBoxLayout;
+    m_snapSagBtn = new QPushButton("Sag");
+    m_snapCorBtn = new QPushButton("Cor");
+    m_snapAxiBtn = new QPushButton("Axi");
+    m_snapVtkBtn = new QPushButton("3D");
+    for (auto* b : {m_snapSagBtn, m_snapCorBtn, m_snapAxiBtn, m_snapVtkBtn})
+        snapRow->addWidget(b);
+    l->addLayout(snapRow);
+    connect(m_snapSagBtn, &QPushButton::clicked, this, [this]{ onSnapshotView(0); });
+    connect(m_snapCorBtn, &QPushButton::clicked, this, [this]{ onSnapshotView(1); });
+    connect(m_snapAxiBtn, &QPushButton::clicked, this, [this]{ onSnapshotView(2); });
+    connect(m_snapVtkBtn, &QPushButton::clicked, this, [this]{ onSnapshotView(3); });
+
+    // ── Slice series / movie ───────────────────────────────────────────────────
+    auto* hRule = new QFrame(gb);
+    hRule->setFrameShape(QFrame::HLine);
+    hRule->setStyleSheet("color:#333;");
+    l->addWidget(hRule);
+
+    l->addWidget(new QLabel("Export slice series / movie:", gb));
+    auto* axRow = new QHBoxLayout;
+    axRow->addWidget(new QLabel("Axis:", gb));
+    m_exportAxisCombo = new QComboBox;
+    m_exportAxisCombo->addItems({"Sagittal (X)", "Coronal (Y)", "Axial (Z)"});
+    m_exportAxisCombo->setCurrentIndex(2);
+    axRow->addWidget(m_exportAxisCombo);
+    l->addLayout(axRow);
+
+    m_exportFramesBtn = new QPushButton("Export Frames to Folder…");
+    m_exportFramesBtn->setStyleSheet("background:#1e3a52; color:white;");
+    l->addWidget(m_exportFramesBtn);
+
+    m_makeMovieBtn = new QPushButton("Export Movie (MP4)…");
+    m_makeMovieBtn->setStyleSheet("background:#1e3a52; color:white;");
+    l->addWidget(m_makeMovieBtn);
+
+    auto* note = new QLabel("Movie export requires ffmpeg in PATH.", gb);
+    note->setStyleSheet("color:#777; font-size:10px;");
+    note->setWordWrap(true);
+    l->addWidget(note);
+
+    connect(m_exportFramesBtn, &QPushButton::clicked, this, &ToolPanel::onExportFrames);
+    connect(m_makeMovieBtn,    &QPushButton::clicked, this, &ToolPanel::onMakeMovie);
+
+    return gb;
+}
+
+// ── 3-D / VTK group ───────────────────────────────────────────────────────────
+
+QGroupBox* ToolPanel::build3DGroup()
+{
+    auto* gb = new QGroupBox("3-D Render"); auto* l = new QVBoxLayout(gb);
+
+    auto* mrow = new QHBoxLayout;
+    mrow->addWidget(new QLabel("Mode:"));
+    m_vtkModeCombo = new QComboBox;
+    m_vtkModeCombo->addItems({"Volume", "Surfaces", "Both"});
+    m_vtkModeCombo->setCurrentIndex(2);
+    mrow->addWidget(m_vtkModeCombo);
+    l->addLayout(mrow);
+
+    m_vtkResetCamBtn = new QPushButton("Reset Camera");
+    l->addWidget(m_vtkResetCamBtn);
+
+    l->addWidget(new QLabel("Resample to isotropic voxels:"));
+    auto* irow = new QHBoxLayout;
+    irow->addWidget(new QLabel("Spacing (mm):"));
+    m_isoSpacingSpin = new QDoubleSpinBox;
+    m_isoSpacingSpin->setRange(0.0, 10.0);   // 0.0 == special-value "Auto (min)"
+    m_isoSpacingSpin->setValue(0.0);
+    m_isoSpacingSpin->setSingleStep(0.1);
+    m_isoSpacingSpin->setDecimals(3);
+    m_isoSpacingSpin->setSpecialValueText("Auto (min)");
+    irow->addWidget(m_isoSpacingSpin);
+    l->addLayout(irow);
+
+    m_resampleIsoBtn = new QPushButton("Apply Isotropic Resample");
+    m_resampleIsoBtn->setStyleSheet("background:#245;color:white;font-weight:bold;");
+    l->addWidget(m_resampleIsoBtn);
+    auto* hint = new QLabel("Replaces display image; mask is reset.\n"
+                            "Recommended before VTK volume render.", gb);
+    hint->setStyleSheet("color:#888;font-size:10px;");
+    l->addWidget(hint);
+
+    connect(m_vtkModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int idx){ if(m_viewer) m_viewer->setVtkRenderMode(idx); });
+    connect(m_vtkResetCamBtn, &QPushButton::clicked,
+            this, [this]{ if(m_viewer) m_viewer->resetVtkCamera(); });
+    connect(m_resampleIsoBtn, &QPushButton::clicked,
+            this, &ToolPanel::onResampleIsotropic);
+
+    return gb;
+}
+
+// ── Measure group ─────────────────────────────────────────────────────────────
+
+QGroupBox* ToolPanel::buildMeasureGroup()
+{
+    auto* gb = new QGroupBox("Measurement Tool"); auto* l = new QVBoxLayout(gb);
+    l->addWidget(new QLabel(
+        "Select the measurement type below,\n"
+        "then click in any slice view.", gb));
+
+    l->addWidget(new QLabel("Measurement type:", gb));
+    m_measureTypeCombo = new QComboBox;
+    m_measureTypeCombo->addItems({"Ruler (2 clicks)",
+                                   "Angle (3 clicks — vertex 2nd)",
+                                   "Circle area (drag)"});
+    l->addWidget(m_measureTypeCombo);
+
+    m_lastMeasLabel = new QLabel("—", gb);
+    m_lastMeasLabel->setStyleSheet("color:#aef; font-size:11px;");
+    m_lastMeasLabel->setWordWrap(true);
+    l->addWidget(new QLabel("Last result:", gb));
+    l->addWidget(m_lastMeasLabel);
+
+    m_clearMeasBtn = new QPushButton("Clear All Measurements");
+    m_clearMeasBtn->setStyleSheet("background:#500;color:white;");
+    l->addWidget(m_clearMeasBtn);
+
+    connect(m_measureTypeCombo,
+            QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &ToolPanel::onMeasureTypeChanged);
+    connect(m_clearMeasBtn, &QPushButton::clicked, this, [this]{
+        if(m_viewer) m_viewer->clearMeasurements();
+    });
+    return gb;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Public API
+// ═══════════════════════════════════════════════════════════════════════════════
+
+void ToolPanel::setVolume(ROIVolume* vol)
+{
+    m_vol=vol;
+    if(m_tagWidget) m_tagWidget->setVolume(vol);
+    if(m_histWidget){
+        m_histWidget->setVolume(vol);
+        connect(m_histWidget, &HistogramWidget::windowChanged, this,
+                [this](float lo, float hi){
+                    if(m_vol) m_vol->setWindow(lo, hi);
+                    emit refreshRequested();
+                }, Qt::UniqueConnection);
+    }
+    if(!vol||!vol->isLoaded()) return;
+    {QSignalBlocker b(m_xSlider); m_xSlider->setMaximum(vol->nx()-1); m_xSlider->setValue(vol->nx()/2); m_xLabel->setText(QString("X %1").arg(vol->nx()/2));}
+    {QSignalBlocker b(m_ySlider); m_ySlider->setMaximum(vol->ny()-1); m_ySlider->setValue(vol->ny()/2); m_yLabel->setText(QString("Y %1").arg(vol->ny()/2));}
+    {QSignalBlocker b(m_zSlider); m_zSlider->setMaximum(vol->nz()-1); m_zSlider->setValue(vol->nz()/2); m_zLabel->setText(QString("Z %1").arg(vol->nz()/2));}
+    float vmin=vol->vmin(), vmax=vol->vmax();
+    m_thresh.lower->setRange(vmin,vmax); m_thresh.lower->setValue(vmin);
+    m_thresh.upper->setRange(vmin,vmax); m_thresh.upper->setValue(vmax);
+    m_nbr.lower->setRange(vmin,vmax);    m_nbr.lower->setValue(vmin);
+    m_nbr.upper->setRange(vmin,vmax);    m_nbr.upper->setValue(vmax);
+    onVolumeLoaded();
+}
+
+void ToolPanel::setViewer(OrthoViewer* v)
+{
+    m_viewer=v;
+    if(v){
+        connect(v, &OrthoViewer::measurementAdded, this,
+                [this](const QString& s){
+                    if(m_lastMeasLabel) m_lastMeasLabel->setText(s);
+                }, Qt::UniqueConnection);
+
+        // ── Cine player ───────────────────────────────────────────────────────
+        connect(m_cinePlayBtn, &QPushButton::toggled, this, [this](bool on){
+            if (!m_viewer) return;
+            if (on) {
+                m_cinePlayBtn->setText("⏹  Stop");
+                m_viewer->setCineFps(m_cineFpsSpin->value());
+                m_viewer->setCineAxis(m_cineAxisCombo->currentIndex());
+                m_viewer->playCine();
+            } else {
+                m_cinePlayBtn->setText("▶  Play");
+                m_viewer->stopCine();
+            }
+        }, Qt::UniqueConnection);
+        connect(m_cineFpsSpin, QOverload<int>::of(&QSpinBox::valueChanged),
+                this, [this](int fps){ if(m_viewer) m_viewer->setCineFps(fps); },
+                Qt::UniqueConnection);
+        connect(m_cineAxisCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this](int ax){ if(m_viewer) m_viewer->setCineAxis(ax); },
+                Qt::UniqueConnection);
+
+        if (m_infoOverlayCheck)
+            v->setShowInfoOverlay(m_infoOverlayCheck->isChecked());
+    }
+}
+
+int     ToolPanel::activeLabel() const { return m_labelCombo->currentData().toInt(); }
+int     ToolPanel::brushRadius() const { return m_brushRadiusSpin ? m_brushRadiusSpin->value() : 3; }
+int     ToolPanel::brushShape()  const { return m_brushShapeCombo ? m_brushShapeCombo->currentIndex() : 0; }
+bool    ToolPanel::twoDOnly()    const { return m_twoDCheckbox    ? m_twoDCheckbox->isChecked() : false; }
+
+QString ToolPanel::toolMode() const
+{
+    if (m_operatorCombo) {
+        const int op = m_operatorCombo->currentIndex();
+        if (op == 0) return "";          // Navigation Viewer — no painting
+        if (op == 2) return "measure";   // Measure operator
+    }
+    // ROI operator (index 1) — derive from tool combo
+    return m_toolCombo ? m_toolCombo->currentText().toLower() : "paint";
+}
+
+void ToolPanel::onPositionChanged(int x,int y,int z){
+    QSignalBlocker bx(m_xSlider),by(m_ySlider),bz(m_zSlider);
+    m_xSlider->setValue(x); m_xLabel->setText(QString("X %1").arg(x));
+    m_ySlider->setValue(y); m_yLabel->setText(QString("Y %1").arg(y));
+    m_zSlider->setValue(z); m_zLabel->setText(QString("Z %1").arg(z));
+}
+
+void ToolPanel::onSeedSet(int x,int y,int z){
+    m_seedX=x; m_seedY=y; m_seedZ=z; m_seedSet=true;
+    m_seedLabel->setText(
+        QString("Seed: (%1,%2,%3)  val: %4")
+            .arg(x).arg(y).arg(z)
+            .arg(m_vol?QString::number(m_vol->getIntensity(x,y,z),'f',1):"?"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Slot implementations
+// ═══════════════════════════════════════════════════════════════════════════════
+
+void ToolPanel::onNavXChanged(int x){ m_xLabel->setText(QString("X %1").arg(x)); if(m_viewer) m_viewer->setX(x); }
+void ToolPanel::onNavYChanged(int y){ m_yLabel->setText(QString("Y %1").arg(y)); if(m_viewer) m_viewer->setY(y); }
+void ToolPanel::onNavZChanged(int z){ m_zLabel->setText(QString("Z %1").arg(z)); if(m_viewer) m_viewer->setZ(z); }
+void ToolPanel::onSegMethodChanged(int idx){ m_segParamStack->setCurrentIndex(idx); }
+
+void ToolPanel::onOperatorChanged(int idx)
+{
+    m_operatorStack->setCurrentIndex(idx);
+    if (!m_viewer) return;
+
+    if (idx == 2) {
+        // Measure operator — activate measure tool
+        int type = m_measureTypeCombo ? m_measureTypeCombo->currentIndex() + 1 : 1;
+        m_viewer->setMeasureMode(type);
+    } else {
+        // Navigation Viewer or ROI — disable measure mode
+        m_viewer->setMeasureMode(0);
+        if (idx == 1 && m_toolCombo)
+            onToolModeChanged(m_toolCombo->currentIndex());
+    }
+}
+
+void ToolPanel::onToolModeChanged(int /*idx*/)
+{
+    if (!m_viewer) return;
+    // All ROI tools (paint/erase/segment) clear the measure overlay
+    m_viewer->setMeasureMode(0);
+}
+
+void ToolPanel::onMeasureTypeChanged(int idx)
+{
+    // Only apply when Measure operator is active
+    if (m_operatorCombo && m_operatorCombo->currentIndex() == 2 && m_viewer)
+        m_viewer->setMeasureMode(idx + 1);   // 0=None, 1=Ruler, 2=Angle, 3=Circle
+}
+
+// ── Apply segmentation ────────────────────────────────────────────────────────
+
+void ToolPanel::applySegmentation()
+{
+    if(!m_vol||!m_vol->isLoaded()){ setStatus("No image loaded."); return; }
+    static const int SEED_METHODS[]={1,2,3,4,5,6,11};
+    int method=m_segMethodCombo->currentData().toInt();
+    for(int sm:SEED_METHODS) if(sm==method&&!m_seedSet){
+        setStatus("Switch to Segment tool and click on image to set a seed first."); return; }
+    int16_t lbl=static_cast<int16_t>(activeLabel());
+    try {
+        switch(method){
+        case 0:{int axis=-1,si=-1;
+            if(m_thresh.sliceOnly->isChecked()){
+                int ac=m_thresh.sliceAxis->currentIndex();
+                axis=(ac==0)?2:(ac==1)?1:0;
+                if(m_viewer) si=(axis==2)?m_viewer->z():(axis==1)?m_viewer->y():m_viewer->x();
+            }
+            ROIAlgorithms::thresholdSegment(*m_vol,(float)m_thresh.lower->value(),(float)m_thresh.upper->value(),lbl,axis,si); break;}
+        case 1: ROIAlgorithms::regionGrow(*m_vol,m_seedX,m_seedY,m_seedZ,(float)m_grow.tolerance->value(),lbl); break;
+        case 2: ROIAlgorithms::connectedThreshold(*m_vol,m_seedX,m_seedY,m_seedZ,(float)m_thresh.lower->value(),(float)m_thresh.upper->value(),lbl); break;
+        case 3: ROIAlgorithms::neighborhoodConnected(*m_vol,m_seedX,m_seedY,m_seedZ,(float)m_nbr.lower->value(),(float)m_nbr.upper->value(),m_nbr.radius->value(),lbl); break;
+        case 4: ROIAlgorithms::confidenceConnected(*m_vol,m_seedX,m_seedY,m_seedZ,(float)m_conf.multiplier->value(),m_conf.iterations->value(),m_conf.radius->value(),lbl); break;
+        case 5:{int ac=m_ff2d.axis->currentIndex(); int ax=(ac==0)?2:(ac==1)?1:0;
+            ROIAlgorithms::floodFill2D(*m_vol,m_seedX,m_seedY,m_seedZ,ax,(float)m_ff2d.tolerance->value(),lbl); break;}
+        case 6: ROIAlgorithms::fastMarching(*m_vol,m_seedX,m_seedY,m_seedZ,(float)m_fm.stoppingValue->value(),lbl); break;
+        case 7: ROIAlgorithms::otsuThreshold(*m_vol,lbl,m_otsu.bins->value(),m_otsu.classes->value()); break;
+        case 8: ROIAlgorithms::kMeansCluster(*m_vol,m_kmeans.k->value(),lbl); break;
+        case 9: ROIAlgorithms::levelSetRefine(*m_vol,lbl,m_ls.iterations->value(),(float)m_ls.propagation->value(),(float)m_ls.curvature->value()); break;
+        case 10: ROIAlgorithms::watershed(*m_vol,lbl); break;
+        case 11: ROIAlgorithms::roiConnected(*m_vol,m_seedX,m_seedY,m_seedZ,lbl,lbl); break;
+        case 12: ROIAlgorithms::removeSmallComponents(*m_vol,lbl,m_minSize.minSize->value()); break;
+        case 13: ROIAlgorithms::connectedComponents(*m_vol,lbl,m_cc.maxComp->value()); break;
+        case 14:{int ac=m_fill.axis->currentIndex(); int ax=(ac==0)?-1:(ac==1)?2:(ac==2)?1:0;
+            ROIAlgorithms::fillHoles(*m_vol,lbl,ax); break;}
+        case 15: ROIAlgorithms::makeShell(*m_vol,lbl,m_shell.thickness->value()); break;
+        case 16: ROIAlgorithms::lowPassSmooth(*m_vol,lbl,(float)m_smooth.sigma->value()); break;
+        case 17:{int16_t lb=static_cast<int16_t>(m_bool.labelB->currentData().toInt());
+            ROIAlgorithms::booleanOp(*m_vol,lbl,lb,m_bool.op->currentText().toStdString(),lbl); break;}
+        default: setStatus("Unknown method."); return;
+        }
+        setStatus("Done."); emit refreshRequested();
+    } catch(const std::exception& e){
+        setStatus(QString("Error: %1").arg(e.what()));
+        QMessageBox::critical(this,"Segmentation error",e.what());
+    }
+}
+
+// ── Morph / Edit / I/O callbacks ──────────────────────────────────────────────
+
+void ToolPanel::applyMorph(){
+    if(!m_vol) return;
+    int r=m_erodeDilateSlider->value();
+    if(r==0){setStatus("Radius=0, no change.");return;}
+    try{ ROIAlgorithms::morphErodeDilate(*m_vol,(int16_t)activeLabel(),r);
+         emit refreshRequested(); setStatus("Morph applied.");
+    }catch(const std::exception& e){setStatus(QString("Morph error: %1").arg(e.what()));}
+}
+void ToolPanel::onUndo(){ if(m_vol){m_vol->undo(); emit refreshRequested();} }
+void ToolPanel::onClearLabel(){ if(m_vol){m_vol->clearLabel(activeLabel()); emit refreshRequested();} }
+void ToolPanel::onClearAll()  { if(m_vol){m_vol->clearLabel(-1);            emit refreshRequested();} }
+
+void ToolPanel::onSaveMask(){
+    if(!m_vol){setStatus("No image.");return;}
+    QString dir=m_saveDirEdit->text().trimmed();
+    if(dir.isEmpty()){ dir=QFileDialog::getExistingDirectory(this,"Select output directory"); if(dir.isEmpty())return; m_saveDirEdit->setText(dir);}
+    QString file=m_saveFileEdit->text().trimmed(); if(file.isEmpty()) file="roi_mask.nii.gz";
+    QString out=dir+"/"+file;
+    if(m_vol->saveMask(out.toStdString())) setStatus("Saved: "+out);
+    else setStatus("Save failed.");
+}
+void ToolPanel::onLoadMask(){
+    if(!m_vol){setStatus("No image.");return;}
+    QString p=m_loadMaskEdit->text().trimmed(); if(p.isEmpty())return;
+    if(m_vol->loadMask(p.toStdString())){ emit refreshRequested(); setStatus("Mask loaded.");}
+    else setStatus("Load failed.");
+}
+void ToolPanel::setStatus(const QString& msg){ m_statusLabel->setText(msg); }
 
 void ToolPanel::onResetWindow(){
     if(!m_vol) return;
@@ -748,7 +1038,7 @@ void ToolPanel::onSnapToCentroid(){
 
 void ToolPanel::onPropagateLabel(int direction){
     if(!m_vol||!m_viewer) return;
-    int ac=m_propAxisCombo->currentIndex(); // 0=X,1=Y,2=Z
+    int ac=m_propAxisCombo->currentIndex();
     int axisIdx=(ac==0)?m_viewer->x():(ac==1)?m_viewer->y():m_viewer->z();
     int n=m_vol->propagateLabel(activeLabel(),ac,axisIdx,direction);
     setStatus(QString("Propagated %1 voxels.").arg(n));
@@ -783,149 +1073,17 @@ void ToolPanel::onRegisterImage(){
     }
 }
 
-// ── Cine group ────────────────────────────────────────────────────────────────
-
-QGroupBox* ToolPanel::buildCineGroup()
-{
-    auto* gb = new QGroupBox("Cine / Loop"); auto* l = new QVBoxLayout(gb);
-
-    auto* topRow = new QHBoxLayout;
-    m_cinePlayBtn = new QPushButton("▶  Play");
-    m_cinePlayBtn->setCheckable(true);
-    m_cinePlayBtn->setStyleSheet("QPushButton:checked{background:#245;color:white;}");
-    topRow->addWidget(m_cinePlayBtn);
-    topRow->addWidget(new QLabel("FPS:"));
-    m_cineFpsSpin = new QSpinBox;
-    m_cineFpsSpin->setRange(1, 30); m_cineFpsSpin->setValue(8); m_cineFpsSpin->setMaximumWidth(54);
-    topRow->addWidget(m_cineFpsSpin);
-    l->addLayout(topRow);
-
-    auto* axRow = new QHBoxLayout;
-    axRow->addWidget(new QLabel("Axis:"));
-    m_cineAxisCombo = new QComboBox;
-    m_cineAxisCombo->addItems({"Sagittal (X)", "Coronal (Y)", "Axial (Z)"});
-    m_cineAxisCombo->setCurrentIndex(2);
-    axRow->addWidget(m_cineAxisCombo);
-    l->addLayout(axRow);
-
-    // Connections wired in setViewer() once the viewer is available
-    return gb;
-}
-
-// ── 3-D / VTK group ───────────────────────────────────────────────────────────
-
-QGroupBox* ToolPanel::build3DGroup()
-{
-    auto* gb = new QGroupBox("3-D Render"); auto* l = new QVBoxLayout(gb);
-
-    // Render mode
-    auto* mrow = new QHBoxLayout;
-    mrow->addWidget(new QLabel("Mode:"));
-    m_vtkModeCombo = new QComboBox;
-    m_vtkModeCombo->addItems({"Volume", "Surfaces", "Both"});
-    m_vtkModeCombo->setCurrentIndex(2);
-    mrow->addWidget(m_vtkModeCombo);
-    l->addLayout(mrow);
-
-    m_vtkResetCamBtn = new QPushButton("Reset Camera");
-    l->addWidget(m_vtkResetCamBtn);
-
-    // Isotropic resample
-    l->addWidget(new QLabel("Resample to isotropic voxels:"));
-    auto* irow = new QHBoxLayout;
-    irow->addWidget(new QLabel("Spacing (mm):"));
-    m_isoSpacingSpin = new QDoubleSpinBox;
-    m_isoSpacingSpin->setRange(0.0, 10.0);   // 0.0 == minimum == special-value "Auto (min)"
-    m_isoSpacingSpin->setValue(0.0);
-    m_isoSpacingSpin->setSingleStep(0.1);
-    m_isoSpacingSpin->setDecimals(3);
-    m_isoSpacingSpin->setSpecialValueText("Auto (min)");
-    irow->addWidget(m_isoSpacingSpin);
-    l->addLayout(irow);
-
-    m_resampleIsoBtn = new QPushButton("Apply Isotropic Resample");
-    m_resampleIsoBtn->setStyleSheet("background:#245;color:white;font-weight:bold;");
-    l->addWidget(m_resampleIsoBtn);
-    l->addWidget(new QLabel(
-        "Replaces display image; mask is reset.\n"
-        "Recommended before VTK volume render.",
-        gb));
-    l->itemAt(l->count()-1)->widget()->setStyleSheet("color:#888;font-size:10px;");
-
-    connect(m_vtkModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int idx){ if(m_viewer) m_viewer->setVtkRenderMode(idx); });
-    connect(m_vtkResetCamBtn, &QPushButton::clicked,
-            this, [this]{ if(m_viewer) m_viewer->resetVtkCamera(); });
-    connect(m_resampleIsoBtn, &QPushButton::clicked,
-            this, &ToolPanel::onResampleIsotropic);
-
-    return gb;
-}
-
-// ── Measure group ─────────────────────────────────────────────────────────────
-
-QGroupBox* ToolPanel::buildMeasureGroup()
-{
-    auto* gb = new QGroupBox("Measurement Tool"); auto* l = new QVBoxLayout(gb);
-    l->addWidget(new QLabel(
-        "Select \"Measure\" in the Paint tab tool\n"
-        "combo, then click in any slice view.", gb));
-
-    l->addWidget(new QLabel("Measurement type:", gb));
-    m_measureTypeCombo = new QComboBox;
-    m_measureTypeCombo->addItems({"Ruler (2 clicks)",
-                                   "Angle (3 clicks — vertex 2nd)",
-                                   "Circle area (drag)"});
-    l->addWidget(m_measureTypeCombo);
-
-    m_lastMeasLabel = new QLabel("—", gb);
-    m_lastMeasLabel->setStyleSheet("color:#aef; font-size:11px;");
-    m_lastMeasLabel->setWordWrap(true);
-    l->addWidget(new QLabel("Last result:", gb));
-    l->addWidget(m_lastMeasLabel);
-
-    m_clearMeasBtn = new QPushButton("Clear All Measurements");
-    m_clearMeasBtn->setStyleSheet("background:#500;color:white;");
-    l->addWidget(m_clearMeasBtn);
-
-    connect(m_measureTypeCombo,
-            QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &ToolPanel::onMeasureTypeChanged);
-    connect(m_clearMeasBtn, &QPushButton::clicked, this, [this]{
-        if(m_viewer) m_viewer->clearMeasurements();
-    });
-    return gb;
-}
-
-void ToolPanel::onMeasureTypeChanged(int idx)
-{
-    // Only apply if we're in Measure tool mode
-    if(toolMode() == "measure" && m_viewer)
-        m_viewer->setMeasureMode(idx + 1);  // 0=None, 1=Ruler, 2=Angle, 3=Circle
-}
-
-void ToolPanel::onToolModeChanged(int /*idx*/)
-{
-    if(!m_viewer) return;
-    if(toolMode() == "measure") {
-        int type = m_measureTypeCombo ? m_measureTypeCombo->currentIndex()+1 : 1;
-        m_viewer->setMeasureMode(type);
-    } else {
-        m_viewer->setMeasureMode(0);   // None
-    }
-}
-
 void ToolPanel::onResampleIsotropic()
 {
     if(!m_vol||!m_vol->isLoaded()){ setStatus("No image loaded."); return; }
-    float sp = (float)m_isoSpacingSpin->value();  // 0 = auto
+    float sp = (float)m_isoSpacingSpin->value();
     setStatus("Resampling… please wait");
     QApplication::processEvents();
     if(m_vol->resampleToIsotropicSpacing(sp)){
         onVolumeLoaded();
         if(m_histWidget) m_histWidget->refresh();
         if(m_viewer){
-            m_viewer->setVolume(m_vol);   // re-push new display image to VTK
+            m_viewer->setVolume(m_vol);
             m_viewer->refresh();
         }
         emit refreshRequested();
@@ -934,4 +1092,136 @@ void ToolPanel::onResampleIsotropic()
     } else {
         setStatus("Resample failed — see console.");
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Export — snapshot, slice series, movie
+// ═══════════════════════════════════════════════════════════════════════════════
+
+void ToolPanel::onSnapshotView(int viewIdx)
+{
+    if (!m_viewer) { setStatus("No viewer available."); return; }
+
+    static const char* names[] = { "sagittal", "coronal", "axial", "3D" };
+    QString path = QFileDialog::getSaveFileName(
+        this,
+        QString("Save %1 snapshot").arg(names[viewIdx]),
+        QString("roisa_%1.png").arg(names[viewIdx]),
+        "PNG (*.png);;JPEG (*.jpg);;All files (*)");
+    if (path.isEmpty()) return;
+
+    QPixmap px;
+    switch (viewIdx) {
+    case 0: px = m_viewer->grabSagittal(); break;
+    case 1: px = m_viewer->grabCoronal();  break;
+    case 2: px = m_viewer->grabAxial();    break;
+    case 3: px = m_viewer->grabVtk();      break;
+    default: return;
+    }
+
+    if (px.save(path)) setStatus("Saved: " + QFileInfo(path).fileName());
+    else               setStatus("Snapshot save failed.");
+}
+
+void ToolPanel::onExportFrames()
+{
+    if (!m_vol || !m_viewer) { setStatus("No image loaded."); return; }
+
+    QString dir = QFileDialog::getExistingDirectory(
+        this, "Select output folder for frames");
+    if (dir.isEmpty()) return;
+
+    const int axis  = m_exportAxisCombo ? m_exportAxisCombo->currentIndex() : 2;
+    const int total = (axis == 0) ? m_vol->nx()
+                    : (axis == 1) ? m_vol->ny()
+                    : m_vol->nz();
+
+    const int origX = m_viewer->x(), origY = m_viewer->y(), origZ = m_viewer->z();
+    int saved = 0;
+
+    for (int i = 0; i < total; ++i) {
+        if      (axis == 0) m_viewer->setX(i);
+        else if (axis == 1) m_viewer->setY(i);
+        else                m_viewer->setZ(i);
+        QApplication::processEvents();
+
+        QPixmap px;
+        if      (axis == 0) px = m_viewer->grabSagittal();
+        else if (axis == 1) px = m_viewer->grabCoronal();
+        else                px = m_viewer->grabAxial();
+
+        if (px.save(dir + QString("/frame_%1.png").arg(i, 4, 10, QChar('0'))))
+            ++saved;
+
+        if (i % 20 == 0)
+            setStatus(QString("Exporting frame %1 / %2…").arg(i+1).arg(total));
+    }
+
+    // Restore original position
+    m_viewer->setX(origX); m_viewer->setY(origY); m_viewer->setZ(origZ);
+    setStatus(QString("Exported %1/%2 frames → %3").arg(saved).arg(total).arg(dir));
+}
+
+void ToolPanel::onMakeMovie()
+{
+    if (!m_vol || !m_viewer) { setStatus("No image loaded."); return; }
+
+    QString outPath = QFileDialog::getSaveFileName(
+        this, "Export Movie", "roisa_movie.mp4",
+        "MP4 (*.mp4);;AVI (*.avi);;All files (*)");
+    if (outPath.isEmpty()) return;
+
+    const int axis  = m_exportAxisCombo ? m_exportAxisCombo->currentIndex() : 2;
+    const int total = (axis == 0) ? m_vol->nx()
+                    : (axis == 1) ? m_vol->ny()
+                    : m_vol->nz();
+    const int fps   = m_cineFpsSpin ? m_cineFpsSpin->value() : 8;
+
+    // Write frames to temp directory
+    const QString tmpDir = QDir::tempPath() + "/roisa_movie_export";
+    QDir().mkpath(tmpDir);
+
+    const int origX = m_viewer->x(), origY = m_viewer->y(), origZ = m_viewer->z();
+
+    for (int i = 0; i < total; ++i) {
+        if      (axis == 0) m_viewer->setX(i);
+        else if (axis == 1) m_viewer->setY(i);
+        else                m_viewer->setZ(i);
+        QApplication::processEvents();
+
+        QPixmap px;
+        if      (axis == 0) px = m_viewer->grabSagittal();
+        else if (axis == 1) px = m_viewer->grabCoronal();
+        else                px = m_viewer->grabAxial();
+
+        px.save(tmpDir + QString("/frame_%1.png").arg(i, 4, 10, QChar('0')));
+
+        if (i % 20 == 0)
+            setStatus(QString("Rendering frame %1 / %2…").arg(i+1).arg(total));
+    }
+
+    m_viewer->setX(origX); m_viewer->setY(origY); m_viewer->setZ(origZ);
+
+    setStatus("Encoding with ffmpeg…");
+    QApplication::processEvents();
+
+    QProcess proc;
+    proc.start("ffmpeg", {
+        "-y",
+        "-framerate", QString::number(fps),
+        "-i",         tmpDir + "/frame_%04d.png",
+        "-c:v",       "libx264",
+        "-pix_fmt",   "yuv420p",
+        outPath
+    });
+    proc.waitForFinished(120000);  // up to 2 minutes
+
+    // Clean up temp frames
+    QDir(tmpDir).removeRecursively();
+
+    if (proc.exitCode() == 0)
+        setStatus("Movie saved: " + QFileInfo(outPath).fileName());
+    else
+        setStatus(QString("ffmpeg failed (exit %1). Is it in PATH?")
+                  .arg(proc.exitCode()));
 }

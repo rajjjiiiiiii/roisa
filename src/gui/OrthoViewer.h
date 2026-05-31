@@ -7,6 +7,7 @@
 //  Preset 3  "Axi"   Axial only
 //  Preset 4  "3D"    VTK only
 
+#include <QPixmap>
 #include <QWidget>
 #include "../core/ROIVolume.h"
 
@@ -49,6 +50,12 @@ public:
     void refreshVtk();                   // full VTK refresh (volume + surfaces)
     void setVtkRenderMode(int mode);     // 0=vol, 1=surf, 2=both
     void resetVtkCamera();
+
+    // Panel snapshots for Export (ToolPanel grabs individual views as PNG/movie)
+    QPixmap grabSagittal() const;
+    QPixmap grabCoronal()  const;
+    QPixmap grabAxial()    const;
+    QPixmap grabVtk()      const;
 
     // No-op kept for API compatibility (histogram now lives in ToolPanel)
     void refreshHistogram() {}

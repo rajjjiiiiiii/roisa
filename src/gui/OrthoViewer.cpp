@@ -385,6 +385,13 @@ void OrthoViewer::setCineFps(int fps)
         m_cineTimer->setInterval(1000 / m_cineFps);
 }
 
+// ── Panel snapshots ───────────────────────────────────────────────────────────
+
+QPixmap OrthoViewer::grabSagittal() const { return m_sagView->grab(); }
+QPixmap OrthoViewer::grabCoronal()  const { return m_corView->grab(); }
+QPixmap OrthoViewer::grabAxial()    const { return m_axiView->grab(); }
+QPixmap OrthoViewer::grabVtk()      const { return m_vtkView->grab(); }
+
 void OrthoViewer::onCineTick()
 {
     if (!m_vol || !m_vol->isLoaded()) { stopCine(); return; }
