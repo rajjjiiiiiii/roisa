@@ -235,6 +235,9 @@ class OrthoViewer(QWidget):
     def setVtkRenderMode(self, mode: int) -> None:
         self._vtk_view.setRenderMode(mode)
 
+    def setVtkClip(self, enabled: bool, axis: int, frac: float) -> None:
+        self._vtk_view.setClip(enabled, axis, frac)
+
     def resetVtkCamera(self) -> None:
         self._vtk_view.resetCamera()
 
@@ -277,6 +280,18 @@ class OrthoViewer(QWidget):
     def setShowInfoOverlay(self, on: bool) -> None:
         for sv in (self._sag_view, self._cor_view, self._axi_view):
             sv.setShowInfoOverlay(on)
+
+    def setProjectionMode(self, mode: int) -> None:
+        for sv in (self._sag_view, self._cor_view, self._axi_view):
+            sv.setProjectionMode(mode)
+
+    def setSlab(self, slab: int) -> None:
+        for sv in (self._sag_view, self._cor_view, self._axi_view):
+            sv.setSlab(slab)
+
+    def setShowColorbar(self, on: bool) -> None:
+        for sv in (self._sag_view, self._cor_view, self._axi_view):
+            sv.setShowColorbar(on)
 
     def setMeasureMode(self, mode: int) -> None:
         for sv in (self._sag_view, self._cor_view, self._axi_view):

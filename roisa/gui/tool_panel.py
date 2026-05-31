@@ -310,6 +310,18 @@ class ToolPanel(QWidget):
         self._interp_cb = QCheckBox("Smooth interpolation"); l.addWidget(self._interp_cb)
         self._info_cb   = QCheckBox("Show info overlay (W/L + position)")
         self._info_cb.setChecked(True); l.addWidget(self._info_cb)
+        self._colorbar_cb = QCheckBox("Show colorbar legend"); l.addWidget(self._colorbar_cb)
+
+        # Projection (MIP / MinIP)
+        prow = QHBoxLayout(); prow.addWidget(QLabel("Projection"))
+        self._proj_combo = QComboBox()
+        self._proj_combo.addItems(["Slice", "MIP (max)", "MinIP (min)"])
+        prow.addWidget(self._proj_combo, 1)
+        prow.addWidget(QLabel("Slab±"))
+        self._slab_spin = _int(0, 200, 0); self._slab_spin.setMaximumWidth(60)
+        prow.addWidget(self._slab_spin)
+        l.addLayout(prow)
+
         brow = QHBoxLayout()
         self._show_all_btn  = QPushButton("Show All")
         self._hide_all_btn  = QPushButton("Hide All")
@@ -325,6 +337,12 @@ class ToolPanel(QWidget):
             lambda on: self._viewer.setInterpolate(on) if self._viewer else None)
         self._info_cb.toggled.connect(
             lambda on: self._viewer.setShowInfoOverlay(on) if self._viewer else None)
+        self._colorbar_cb.toggled.connect(
+            lambda on: self._viewer.setShowColorbar(on) if self._viewer else None)
+        self._proj_combo.currentIndexChanged.connect(
+            lambda i: self._viewer.setProjectionMode(i) if self._viewer else None)
+        self._slab_spin.valueChanged.connect(
+            lambda v: self._viewer.setSlab(v) if self._viewer else None)
         self._show_all_btn.clicked.connect(
             lambda: self._viewer.setAllLabelsVisible(True) if self._viewer else None)
         self._hide_all_btn.clicked.connect(
@@ -679,6 +697,27 @@ class ToolPanel(QWidget):
         self._vtk_mode.setCurrentIndex(2)
         mr.addWidget(self._vtk_mode); l.addLayout(mr)
         reset_cam = QPushButton("Reset Camera"); l.addWidget(reset_cam)
+
+        # Clip plane
+        self._clip_cb = QCheckBox("Clip plane")
+        l.addWidget(self._clip_cb)
+        crow = QHBoxLayout(); crow.addWidget(QLabel("Axis"))
+        self._clip_axis = QComboBox(); self._clip_axis.addItems(["X", "Y", "Z"])
+        self._clip_axis.setCurrentIndex(2)
+        crow.addWidget(self._clip_axis)
+        self._clip_slider = QSlider(Qt.Orientation.Horizontal)
+        self._clip_slider.setRange(0, 100); self._clip_slider.setValue(50)
+        crow.addWidget(self._clip_slider, 1); l.addLayout(crow)
+
+        def _apply_clip():
+            if self._viewer:
+                self._viewer.setVtkClip(self._clip_cb.isChecked(),
+                                        self._clip_axis.currentIndex(),
+                                        self._clip_slider.value() / 100.)
+        self._clip_cb.toggled.connect(lambda _: _apply_clip())
+        self._clip_axis.currentIndexChanged.connect(lambda _: _apply_clip())
+        self._clip_slider.valueChanged.connect(lambda _: _apply_clip())
+
         l.addWidget(QLabel("Resample to isotropic voxels:"))
         ir = QHBoxLayout(); ir.addWidget(QLabel("Spacing (mm):"))
         self._iso_spin = QDoubleSpinBox()

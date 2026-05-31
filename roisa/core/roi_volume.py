@@ -223,6 +223,28 @@ class ROIVolume:
         elif axis == 1: return self._arr[:, idx, :]
         else:           return self._arr[:, :, idx]
 
+    def get_image_slice_proj(self, axis: int, idx: int,
+                             mode: int = 0, slab: int = 0) -> np.ndarray:
+        """Projection slice (same shape as get_image_slice).
+
+        mode: 0=single slice  1=MIP (max)  2=MinIP (min)
+        slab: number of slices each side of idx (0 = whole volume).
+        """
+        if not self._loaded:
+            return np.zeros((1, 1), np.float32)
+        if mode == 0:
+            return self.get_image_slice(axis, idx)
+        # projection axis = the view's constant axis (0:x in array dim 2, etc.)
+        arr = self._arr
+        pax = {0: 2, 1: 1, 2: 0}[axis]   # array axis to project along
+        n = arr.shape[pax]
+        if slab > 0:
+            lo, hi = max(0, idx - slab), min(n, idx + slab + 1)
+            sl = [slice(None)] * 3
+            sl[pax] = slice(lo, hi)
+            arr = arr[tuple(sl)]
+        return (arr.min(axis=pax) if mode == 2 else arr.max(axis=pax)).astype(np.float32)
+
     def get_mask_slice(self, axis: int, idx: int) -> np.ndarray:
         """Return 2-D int16 (rows, cols)."""
         if not self._loaded:

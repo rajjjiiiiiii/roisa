@@ -52,14 +52,42 @@ class VtkView(QWidget):
         style = vtk.vtkInteractorStyleTrackballCamera()
         self._vtkWidget.GetRenderWindow().GetInteractor().SetInteractorStyle(style)
 
-        # Actors (created lazily)
-        self._vol_actor:  Optional[vtk.vtkVolume]         = None
-        self._surf_actor: Optional[vtk.vtkActor]          = None
+        # Actors / mappers (created lazily)
+        self._vol_actor:  Optional[vtk.vtkVolume] = None
+        self._surf_actor: Optional[vtk.vtkActor]  = None
+        self._vol_mapper  = None
+        self._surf_mapper = None
+        self._orient_widget = None
+        self._clip_plane  = vtk.vtkPlane()
+        self._clip_on     = False
+        self._clip_axis   = 2
+        self._clip_frac   = 0.5
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
         if _VTK_OK:
             self._vtkWidget.Initialize()
+            self._ensure_orientation_marker()
+
+    def _ensure_orientation_marker(self) -> None:
+        if not _VTK_OK or self._orient_widget is not None:
+            return
+        try:
+            cube = vtk.vtkAnnotatedCubeActor()
+            cube.SetXPlusFaceText('L');  cube.SetXMinusFaceText('R')
+            cube.SetYPlusFaceText('P');  cube.SetYMinusFaceText('A')
+            cube.SetZPlusFaceText('S');  cube.SetZMinusFaceText('I')
+            cube.GetTextEdgesProperty().SetColor(0.9, 0.9, 0.4)
+            cube.GetCubeProperty().SetColor(0.2, 0.25, 0.32)
+            w = vtk.vtkOrientationMarkerWidget()
+            w.SetOrientationMarker(cube)
+            w.SetInteractor(self._vtkWidget.GetRenderWindow().GetInteractor())
+            w.SetViewport(0.0, 0.0, 0.22, 0.22)
+            w.SetEnabled(1)
+            w.InteractiveOff()
+            self._orient_widget = w
+        except Exception as e:
+            print(f"[VtkView] orientation marker unavailable: {e}")
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -150,11 +178,13 @@ class VtkView(QWidget):
 
         mapper = vtk.vtkSmartVolumeMapper()
         mapper.SetInputConnection(importer.GetOutputPort())
+        self._vol_mapper = mapper
 
         self._vol_actor = vtk.vtkVolume()
         self._vol_actor.SetMapper(mapper)
         self._vol_actor.SetProperty(prop)
         self._renderer.AddVolume(self._vol_actor)
+        self._apply_clip()
 
     def _build_surface_actor(self, label: int) -> None:
         if self._surf_actor:
@@ -207,12 +237,50 @@ class VtkView(QWidget):
         mapper = vtk.vtkPolyDataMapper()
         mapper.SetInputConnection(normals.GetOutputPort())
         mapper.ScalarVisibilityOff()
+        self._surf_mapper = mapper
 
         self._surf_actor = vtk.vtkActor()
         self._surf_actor.SetMapper(mapper)
         self._surf_actor.GetProperty().SetColor(.8, .3, .2)
         self._surf_actor.GetProperty().SetOpacity(.7)
         self._renderer.AddActor(self._surf_actor)
+        self._apply_clip()
+
+    # ── Clip plane ──────────────────────────────────────────────────────────────
+
+    def setClip(self, enabled: bool, axis: int, frac: float) -> None:
+        self._clip_on   = enabled
+        self._clip_axis = int(axis)
+        self._clip_frac = float(frac)
+        self._apply_clip()
+        if _VTK_OK:
+            self._vtkWidget.GetRenderWindow().Render()
+
+    def _apply_clip(self) -> None:
+        if not _VTK_OK:
+            return
+        for mapper in (self._vol_mapper, self._surf_mapper):
+            if mapper is None:
+                continue
+            try:
+                mapper.RemoveAllClippingPlanes()
+            except Exception:
+                pass
+        if not self._clip_on or self._vol is None or not self._vol.is_loaded():
+            return
+        sx, sy, sz = self._vol.spacing_xyz()
+        dims = (self._vol.nx() * sx, self._vol.ny() * sy, self._vol.nz() * sz)
+        normal = [0., 0., 0.]; normal[self._clip_axis] = 1.0
+        origin = [0., 0., 0.]
+        origin[self._clip_axis] = self._clip_frac * dims[self._clip_axis]
+        self._clip_plane.SetOrigin(*origin)
+        self._clip_plane.SetNormal(*normal)
+        for mapper in (self._vol_mapper, self._surf_mapper):
+            if mapper is not None:
+                try:
+                    mapper.AddClippingPlane(self._clip_plane)
+                except Exception:
+                    pass
 
     def _apply_render_mode(self) -> None:
         if not _VTK_OK:

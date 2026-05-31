@@ -58,6 +58,11 @@ class SliceView(QWidget):
         #    wmin:float, wmax:float}
         self._overlays: List[dict] = []
 
+        # Projection (0=slice 1=MIP 2=MinIP) + slab half-width, and colorbar
+        self._proj_mode   = 0
+        self._slab        = 0
+        self._show_colorbar = False
+
         # Crosshair (voxel coords on the in-plane axes)
         self._ch = -1   # horizontal-axis voxel index
         self._cv = -1   # vertical-axis voxel index
@@ -103,6 +108,15 @@ class SliceView(QWidget):
 
     def setBaseVisible(self, on: bool) -> None:
         self._base_visible = on;  self.update()
+
+    def setProjectionMode(self, mode: int) -> None:
+        self._proj_mode = int(mode);  self.update()
+
+    def setSlab(self, slab: int) -> None:
+        self._slab = int(slab);  self.update()
+
+    def setShowColorbar(self, on: bool) -> None:
+        self._show_colorbar = on;  self.update()
 
     def setOverlays(self, overlays: List[dict]) -> None:
         """Set the fusion overlay layers (each on the REF grid)."""
@@ -180,7 +194,8 @@ class SliceView(QWidget):
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No image loaded")
             return
 
-        img_sl = self._vol.get_image_slice(self._axis, self._slice_idx)
+        img_sl = self._vol.get_image_slice_proj(
+            self._axis, self._slice_idx, self._proj_mode, self._slab)
         msk_sl = self._vol.get_mask_slice(self._axis, self._slice_idx)
         rgba   = self._build_rgba(img_sl, msk_sl)
         rows, cols = rgba.shape[:2]
@@ -202,10 +217,21 @@ class SliceView(QWidget):
                 mode)
         p.drawPixmap(int(ox), int(oy), pix)
 
-        self._paint_crosshair(p)
+        if self._proj_mode == 0:
+            self._paint_crosshair(p)
         self._paint_measurements(p)
+        if self._show_colorbar:
+            self._paint_colorbar(p)
         if self._show_info:
             self._paint_info(p)
+        if self._proj_mode:
+            p.setPen(QColor(255, 200, 90))
+            tag = "MIP" if self._proj_mode == 1 else "MinIP"
+            if self._slab:
+                tag += f" ±{self._slab}"
+            f = QFont(); f.setPointSize(8); f.setBold(True); p.setFont(f)
+            p.drawText(self.rect().adjusted(4, 2, 0, 0),
+                       Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft, tag)
 
     # ── RGBA construction ──────────────────────────────────────────────────────
 
@@ -333,6 +359,27 @@ class SliceView(QWidget):
         dx = e.x() - c.x(); dy = e.y() - c.y()
         r  = math.hypot(dx, dy)
         p.drawEllipse(QRectF(c.x() - r, c.y() - r, 2*r, 2*r))
+
+    def _paint_colorbar(self, p: QPainter) -> None:
+        if not self._vol:
+            return
+        w, h = self.width(), self.height()
+        bar_w, bar_h = 10, min(120, h - 60)
+        x = w - bar_w - 6
+        y = (h - bar_h) // 2
+        for i in range(bar_h):
+            t = 1.0 - i / max(1, bar_h - 1)        # top = max
+            g = int(t * 255)
+            rr, gg, bb = self._apply_colormap(
+                np.array([[g]], np.uint8), self._colormap)[0, 0]
+            p.setPen(QColor(int(rr), int(gg), int(bb)))
+            p.drawLine(x, y + i, x + bar_w, y + i)
+        p.setPen(QColor(60, 60, 60))
+        p.drawRect(x, y, bar_w, bar_h)
+        f = QFont(); f.setPointSize(7); p.setFont(f)
+        p.setPen(QColor(210, 210, 210))
+        p.drawText(x - 30, y + 8, f"{self._vol.vmax():.0f}")
+        p.drawText(x - 30, y + bar_h, f"{self._vol.vmin():.0f}")
 
     def _paint_info(self, p: QPainter) -> None:
         if not self._vol:
