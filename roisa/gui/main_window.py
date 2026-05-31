@@ -83,6 +83,11 @@ class MainWindow(QMainWindow):
         self._panel.fusionWindowChanged.connect(self._on_fusion_window)
         self._panel.baseVisibleToggled.connect(self._on_base_visible)
 
+        # ── Wire Registration operator ─────────────────────────────────────────
+        self._panel.registerRequested.connect(self._on_register)
+        self._panel.manualTransformRequested.connect(self._on_manual_transform)
+        self._panel.resetRegistrationRequested.connect(self._on_reset_registration)
+
         # ── Wire viewer / panel ────────────────────────────────────────────────
         self._panel.setViewer(self._viewer)
         self._viewer.positionChanged.connect(self._panel.onPositionChanged)
@@ -140,6 +145,11 @@ class MainWindow(QMainWindow):
             if i == 0:
                 self._image_list.set_remove_enabled(0, len(self._volumes) <= 1)
         self._image_list.set_active(self._active_vol)
+        # Keep the Registration operator's moving-image dropdown in sync
+        self._panel.setMovingImages(
+            [(f"IN{i}  ({os.path.basename(self._vol_names[i])})"
+              if self._vol_names[i] != "(none)" else f"IN{i}", i)
+             for i in range(1, len(self._volumes))])
 
     # ── Fusion ──────────────────────────────────────────────────────────────────
 
@@ -282,6 +292,60 @@ class MainWindow(QMainWindow):
     def _on_base_visible(self, on: bool) -> None:
         self._vol_visible[0] = on
         self._image_list.set_enabled(0, on)
+        self._rebuild_fusion()
+
+    # ── Registration handlers ───────────────────────────────────────────────────
+
+    def _on_register(self, moving_idx: int, mode: str, iterations: int) -> None:
+        ref = self._ref_vol()
+        if not ref.is_loaded():
+            self._panel.setRegStatus("Load a reference image first.")
+            return
+        if moving_idx < 1 or moving_idx >= len(self._volumes):
+            self._panel.setRegStatus("Invalid moving image.")
+            return
+        mv = self._volumes[moving_idx]
+        self._panel.setRegStatus(f"Registering IN{moving_idx} ({mode})… please wait")
+        self._sb.showMessage(f"Registering IN{moving_idx} to REF ({mode})…")
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        QApplication.processEvents()
+        try:
+            ok = mv.register_to(ref, mode=mode, iterations=iterations)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if ok:
+            self._panel.setRegStatus(
+                f"IN{moving_idx} registered to REF ({mode}). Now aligned in fusion.")
+            self._sb.showMessage(f"Registration complete: IN{moving_idx} → REF ({mode})")
+        else:
+            self._panel.setRegStatus(f"Registration of IN{moving_idx} failed — see console.")
+            self._sb.showMessage("Registration failed.")
+        self._rebuild_fusion()
+
+    def _on_manual_transform(self, moving_idx: int, tx: float, ty: float,
+                             tz: float, rx: float, ry: float, rz: float) -> None:
+        ref = self._ref_vol()
+        if not ref.is_loaded() or moving_idx < 1 or moving_idx >= len(self._volumes):
+            return
+        mv = self._volumes[moving_idx]
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            ok = mv.apply_manual_transform(ref, tx, ty, tz, rx, ry, rz)
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._panel.setRegStatus(
+            f"Manual transform applied to IN{moving_idx}."
+            if ok else "Manual transform failed.")
+        self._rebuild_fusion()
+
+    def _on_reset_registration(self, moving_idx: int) -> None:
+        if moving_idx < 1 or moving_idx >= len(self._volumes):
+            return
+        mv = self._volumes[moving_idx]
+        if mv.reset_registration():
+            self._panel.setRegStatus(f"IN{moving_idx} restored to original (unregistered).")
+        else:
+            self._panel.setRegStatus(f"IN{moving_idx} has no registration to reset.")
         self._rebuild_fusion()
 
     # ── Menu ──────────────────────────────────────────────────────────────────

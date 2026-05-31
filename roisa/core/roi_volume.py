@@ -79,6 +79,11 @@ class ROIVolume:
         # keyed by id(ref_volume); invalidated whenever this image reloads.
         self._resample_cache: dict = {}
 
+        # Registration: original (pre-registration) image kept for Reset, plus
+        # the current manual transform params [tx,ty,tz,rx,ry,rz] (mm, degrees).
+        self._orig_sitk = None
+        self._reg_manual = [0., 0., 0., 0., 0., 0.]
+
     # ── Loading ────────────────────────────────────────────────────────────────
 
     def load(self, path: str) -> bool:
@@ -443,6 +448,116 @@ class ROIVolume:
         except Exception as exc:
             print(f"[load_registered_image] {exc}")
             return False
+
+    # ── Registration to a reference volume ─────────────────────────────────────
+
+    def _apply_resampled(self, resampled: "sitk.Image") -> None:
+        """Adopt a resampled image as this volume's data (keeps W/L, resets mask)."""
+        self._sitk_img = resampled
+        self._arr = sitk.GetArrayFromImage(sitk.Cast(resampled, sitk.sitkFloat32))
+        self._spacing = tuple(resampled.GetSpacing())
+        self._origin  = tuple(resampled.GetOrigin())
+        self._mask = np.zeros(self._arr.shape, dtype=np.int16)
+        self._undo_stack.clear()
+        self._resample_cache.clear()
+
+    def register_to(self, fixed: "ROIVolume", mode: str = "rigid",
+                    iterations: int = 100) -> bool:
+        """Register this (moving) image to `fixed` and resample into its frame.
+
+        mode: 'rigid' (Euler3D) | 'affine' | 'deformable' (BSpline).
+        The original image is preserved so reset_registration() can restore it.
+        """
+        if not self._loaded or fixed is None or not fixed.is_loaded():
+            return False
+        try:
+            if self._orig_sitk is None:
+                self._orig_sitk = self._sitk_img      # backup for reset
+            moving = sitk.Cast(self._orig_sitk, sitk.sitkFloat32)
+            fix    = sitk.Cast(fixed._sitk_img, sitk.sitkFloat32)
+
+            reg = sitk.ImageRegistrationMethod()
+            reg.SetMetricAsMattesMutualInformation(50)
+            reg.SetMetricSamplingStrategy(reg.RANDOM)
+            reg.SetMetricSamplingPercentage(0.10)
+            reg.SetInterpolator(sitk.sitkLinear)
+            reg.SetOptimizerScalesFromPhysicalShift()
+            reg.SetShrinkFactorsPerLevel([4, 2, 1])
+            reg.SetSmoothingSigmasPerLevel([2., 1., 0.])
+            reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
+
+            if mode == "deformable":
+                # Pre-align rigidly, then refine with a B-spline mesh
+                rigid = sitk.CenteredTransformInitializer(
+                    fix, moving, sitk.Euler3DTransform(),
+                    sitk.CenteredTransformInitializerFilter.GEOMETRY)
+                init = sitk.BSplineTransformInitializer(fix, [8, 8, 8])
+                reg.SetMovingInitialTransform(rigid)
+                reg.SetInitialTransform(init, inPlace=True)
+                reg.SetOptimizerAsGradientDescentLineSearch(
+                    learningRate=1., numberOfIterations=max(20, iterations // 2))
+                bspline = reg.Execute(fix, moving)
+                out_tx = sitk.CompositeTransform([rigid, bspline])
+            else:
+                base = (sitk.AffineTransform(3) if mode == "affine"
+                        else sitk.Euler3DTransform())
+                init = sitk.CenteredTransformInitializer(
+                    fix, moving, base,
+                    sitk.CenteredTransformInitializerFilter.GEOMETRY)
+                reg.SetOptimizerAsGradientDescent(
+                    learningRate=1., numberOfIterations=iterations)
+                reg.SetInitialTransform(init, inPlace=False)
+                out_tx = reg.Execute(fix, moving)
+
+            resampled = sitk.Resample(moving, fix, out_tx,
+                                      sitk.sitkLinear, 0., sitk.sitkFloat32)
+            self._apply_resampled(resampled)
+            self._reg_manual = [0., 0., 0., 0., 0., 0.]
+            return True
+        except Exception as exc:
+            print(f"[register_to] {exc}")
+            return False
+
+    def apply_manual_transform(self, fixed: "ROIVolume",
+                               tx: float, ty: float, tz: float,
+                               rx: float, ry: float, rz: float) -> bool:
+        """Apply a manual rigid transform (mm translation + degree rotation)
+        to the original moving image and resample into `fixed`'s frame."""
+        if not self._loaded or fixed is None or not fixed.is_loaded():
+            return False
+        try:
+            import math
+            if self._orig_sitk is None:
+                self._orig_sitk = self._sitk_img
+            moving = sitk.Cast(self._orig_sitk, sitk.sitkFloat32)
+            fix    = sitk.Cast(fixed._sitk_img, sitk.sitkFloat32)
+            e = sitk.Euler3DTransform()
+            sz = moving.GetSize()
+            center = moving.TransformContinuousIndexToPhysicalPoint(
+                [(s - 1) / 2.0 for s in sz])
+            e.SetCenter(center)
+            e.SetRotation(math.radians(rx), math.radians(ry), math.radians(rz))
+            e.SetTranslation((tx, ty, tz))
+            resampled = sitk.Resample(moving, fix, e,
+                                      sitk.sitkLinear, 0., sitk.sitkFloat32)
+            self._apply_resampled(resampled)
+            self._reg_manual = [tx, ty, tz, rx, ry, rz]
+            return True
+        except Exception as exc:
+            print(f"[apply_manual_transform] {exc}")
+            return False
+
+    def reset_registration(self) -> bool:
+        """Restore the original (pre-registration) image."""
+        if self._orig_sitk is None:
+            return False
+        self._apply_resampled(self._orig_sitk)
+        self._orig_sitk = None
+        self._reg_manual = [0., 0., 0., 0., 0., 0.]
+        return True
+
+    def is_registered(self) -> bool:
+        return self._orig_sitk is not None
 
     # ── Raw access (VTK, algorithms) ──────────────────────────────────────────
 

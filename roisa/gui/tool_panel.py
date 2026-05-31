@@ -75,6 +75,10 @@ class ToolPanel(QWidget):
     fusionAlphaChanged    = pyqtSignal(float)
     fusionWindowChanged   = pyqtSignal(float, float)
     baseVisibleToggled    = pyqtSignal(bool)
+    # Registration operator (movingIdx is an index into the loaded inputs, 1-based)
+    registerRequested        = pyqtSignal(int, str, int)     # movingIdx, mode, iters
+    manualTransformRequested = pyqtSignal(int, float, float, float, float, float, float)
+    resetRegistrationRequested = pyqtSignal(int)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -89,7 +93,7 @@ class ToolPanel(QWidget):
 
         # ── Operator drop-down ────────────────────────────────────────────────
         self._op_combo = QComboBox()
-        self._op_combo.addItems(["Navigation Viewer", "ROI", "Measure"])
+        self._op_combo.addItems(["Navigation Viewer", "ROI", "Registration", "Measure"])
         self._op_combo.setStyleSheet(
             "QComboBox{background:#1c2a38;color:#9fcfe8;font-weight:bold;"
             "font-size:12px;padding:5px 10px;border:1px solid #2e5070;"
@@ -107,6 +111,7 @@ class ToolPanel(QWidget):
         self._op_stack = QStackedWidget()
         self._op_stack.addWidget(self._build_nav_viewer_op())
         self._op_stack.addWidget(self._build_roi_op())
+        self._op_stack.addWidget(self._build_registration_op())
         self._op_stack.addWidget(self._build_measure_op())
         ml.addWidget(self._op_stack, 1)
 
@@ -187,6 +192,13 @@ class ToolPanel(QWidget):
         w = QWidget(); l = QVBoxLayout(w)
         l.setContentsMargins(0,0,0,0); l.setSpacing(0)
         l.addWidget(_scroll_page(self._build_measure_group()))
+        return w
+
+    def _build_registration_op(self) -> QWidget:
+        w = QWidget(); l = QVBoxLayout(w)
+        l.setContentsMargins(0,0,0,0); l.setSpacing(0)
+        l.addWidget(_scroll_page(self._build_auto_reg_group(),
+                                  self._build_manual_reg_group()))
         return w
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -659,6 +671,110 @@ class ToolPanel(QWidget):
         iso_btn.clicked.connect(self._on_resample_iso)
         return gb
 
+    # ── Registration groups ────────────────────────────────────────────────────
+
+    def _build_auto_reg_group(self) -> QGroupBox:
+        gb = QGroupBox("Register to Reference"); l = QVBoxLayout(gb)
+        l.addWidget(QLabel("Fixed: REF (reference image)"))
+
+        mrow = QHBoxLayout(); mrow.addWidget(QLabel("Moving"))
+        self._reg_moving = QComboBox()
+        self._reg_moving.setToolTip("Input image to align onto the reference")
+        mrow.addWidget(self._reg_moving, 1); l.addLayout(mrow)
+
+        trow = QHBoxLayout(); trow.addWidget(QLabel("Transform"))
+        self._reg_mode = QComboBox()
+        self._reg_mode.addItems(["Rigid", "Affine", "Deformable"])
+        trow.addWidget(self._reg_mode, 1); l.addLayout(trow)
+
+        irow = QHBoxLayout(); irow.addWidget(QLabel("Iterations"))
+        self._reg_iters = _int(10, 1000, 100); irow.addWidget(self._reg_iters)
+        l.addLayout(irow)
+
+        self._reg_run = QPushButton("Register")
+        self._reg_run.setStyleSheet(
+            "QPushButton{background:#1c3a55;color:#cfe;font-weight:bold;padding:5px;}"
+            "QPushButton:hover{background:#24507a;}")
+        l.addWidget(self._reg_run)
+
+        self._reg_status = QLabel("—")
+        self._reg_status.setStyleSheet("color:#9c9;font-size:10px;")
+        self._reg_status.setWordWrap(True)
+        l.addWidget(self._reg_status)
+
+        def _run():
+            mv = self._reg_moving.currentData()
+            if mv is None:
+                self._reg_status.setText("No input image to register. Add one first.")
+                return
+            mode = ["rigid", "affine", "deformable"][self._reg_mode.currentIndex()]
+            self.registerRequested.emit(int(mv), mode, self._reg_iters.value())
+        self._reg_run.clicked.connect(_run)
+        return gb
+
+    def _build_manual_reg_group(self) -> QGroupBox:
+        gb = QGroupBox("Manual Adjustment"); l = QVBoxLayout(gb)
+        l.addWidget(QLabel("Nudge the selected moving image (mm / degrees):"))
+
+        self._man_tx = _dbl(-200, 200, 0, 1, 1)
+        self._man_ty = _dbl(-200, 200, 0, 1, 1)
+        self._man_tz = _dbl(-200, 200, 0, 1, 1)
+        self._man_rx = _dbl(-180, 180, 0, 1, 1)
+        self._man_ry = _dbl(-180, 180, 0, 1, 1)
+        self._man_rz = _dbl(-180, 180, 0, 1, 1)
+        for lbl, a, b in (("Translate X / Rotate X", self._man_tx, self._man_rx),
+                          ("Translate Y / Rotate Y", self._man_ty, self._man_ry),
+                          ("Translate Z / Rotate Z", self._man_tz, self._man_rz)):
+            l.addWidget(QLabel(lbl))
+            row = QHBoxLayout(); row.addWidget(a); row.addWidget(b)
+            l.addLayout(row)
+
+        brow = QHBoxLayout()
+        self._man_apply = QPushButton("Apply")
+        self._man_reset = QPushButton("Reset")
+        brow.addWidget(self._man_apply); brow.addWidget(self._man_reset)
+        l.addLayout(brow)
+
+        def _apply():
+            mv = self._reg_moving.currentData() if self._reg_moving else None
+            if mv is None:
+                self._reg_status.setText("Select a moving input first.")
+                return
+            self.manualTransformRequested.emit(
+                int(mv), self._man_tx.value(), self._man_ty.value(),
+                self._man_tz.value(), self._man_rx.value(),
+                self._man_ry.value(), self._man_rz.value())
+        def _reset():
+            mv = self._reg_moving.currentData() if self._reg_moving else None
+            for s in (self._man_tx, self._man_ty, self._man_tz,
+                      self._man_rx, self._man_ry, self._man_rz):
+                s.setValue(0)
+            if mv is not None:
+                self.resetRegistrationRequested.emit(int(mv))
+        self._man_apply.clicked.connect(_apply)
+        self._man_reset.clicked.connect(_reset)
+        return gb
+
+    def setMovingImages(self, items) -> None:
+        """Populate the moving-image dropdown.  items = list of (label, idx)."""
+        if not hasattr(self, "_reg_moving") or self._reg_moving is None:
+            return
+        cur = self._reg_moving.currentData()
+        self._reg_moving.blockSignals(True)
+        self._reg_moving.clear()
+        for label, idx in items:
+            self._reg_moving.addItem(label, idx)
+        # restore previous selection if still present
+        if cur is not None:
+            i = self._reg_moving.findData(cur)
+            if i >= 0:
+                self._reg_moving.setCurrentIndex(i)
+        self._reg_moving.blockSignals(False)
+
+    def setRegStatus(self, msg: str) -> None:
+        if hasattr(self, "_reg_status") and self._reg_status:
+            self._reg_status.setText(msg)
+
     def _build_measure_group(self) -> QGroupBox:
         gb = QGroupBox("Measurement Tool"); l = QVBoxLayout(gb)
         l.addWidget(QLabel("Select measurement type below,\nthen click in any slice view."))
@@ -732,8 +848,9 @@ class ToolPanel(QWidget):
 
     def toolMode(self) -> str:
         op = self._op_combo.currentIndex() if hasattr(self, '_op_combo') else 1
-        if op == 0: return ""
-        if op == 2: return "measure"
+        if op == 0: return ""        # Navigation Viewer
+        if op == 2: return ""        # Registration — no painting
+        if op == 3: return "measure" # Measure
         return self._tool_combo.currentText().lower() if hasattr(self, '_tool_combo') else "paint"
 
     def brushRadius(self) -> int:
@@ -793,7 +910,7 @@ class ToolPanel(QWidget):
     def _on_op_changed(self, idx: int) -> None:
         self._op_stack.setCurrentIndex(idx)
         if not self._viewer: return
-        if idx == 2:
+        if idx == 3:   # Measure
             self._viewer.setMeasureMode(
                 self._meas_type.currentIndex() + 1)
         else:
@@ -804,7 +921,7 @@ class ToolPanel(QWidget):
             self._viewer.setMeasureMode(0)
 
     def _on_meas_type_changed(self, idx: int) -> None:
-        if self._op_combo.currentIndex() == 2 and self._viewer:
+        if self._op_combo.currentIndex() == 3 and self._viewer:
             self._viewer.setMeasureMode(idx + 1)
 
     def _on_nav_x(self, v: int) -> None:
