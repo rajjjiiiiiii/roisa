@@ -69,7 +69,12 @@ def _scroll_page(*groups) -> QScrollArea:
 
 
 class ToolPanel(QWidget):
-    refreshRequested = pyqtSignal()
+    refreshRequested      = pyqtSignal()
+    # Fusion controls target the layer selected in the Images panel
+    fusionColormapChanged = pyqtSignal(int)
+    fusionAlphaChanged    = pyqtSignal(float)
+    fusionWindowChanged   = pyqtSignal(float, float)
+    baseVisibleToggled    = pyqtSignal(bool)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -132,6 +137,7 @@ class ToolPanel(QWidget):
         self._hist_widget = HistogramWidget()
         self._hist_widget.setFixedHeight(90)
         dm_l.addWidget(self._hist_widget)
+        dm_l.addWidget(self._build_fusion_group())
         dm_l.addWidget(self._build_wl_group())
         dm_l.addWidget(self._build_display_group())
         dm_l.addWidget(self._build_3d_group())
@@ -287,6 +293,86 @@ class ToolPanel(QWidget):
         self._zoom_rst_btn.clicked.connect(
             lambda: self._viewer.resetAllZoom() if self._viewer else None)
         return gb
+
+    def _build_fusion_group(self) -> QGroupBox:
+        """Per-layer fusion controls — target the layer selected in Images panel."""
+        gb = QGroupBox("Fusion — selected layer"); l = QVBoxLayout(gb)
+
+        self._fusion_target_lbl = QLabel("Selected: REF (base)")
+        self._fusion_target_lbl.setStyleSheet(
+            "color:#7ec8ff; font-size:10px; font-weight:bold;")
+        l.addWidget(self._fusion_target_lbl)
+
+        # Colormap for the selected layer
+        cmrow = QHBoxLayout(); cmrow.addWidget(QLabel("Colormap"))
+        self._fusion_cm = QComboBox()
+        self._fusion_cm.addItems(["Gray", "Hot", "Cool", "Viridis"])
+        cmrow.addWidget(self._fusion_cm, 1); l.addLayout(cmrow)
+
+        # Opacity of the selected overlay
+        arow = QHBoxLayout(); arow.addWidget(QLabel("Opacity"))
+        self._fusion_alpha = QSlider(Qt.Orientation.Horizontal)
+        self._fusion_alpha.setRange(0, 100); self._fusion_alpha.setValue(60)
+        self._fusion_alpha_lbl = QLabel("60%"); self._fusion_alpha_lbl.setFixedWidth(34)
+        arow.addWidget(self._fusion_alpha, 1); arow.addWidget(self._fusion_alpha_lbl)
+        l.addLayout(arow)
+
+        # Window / Level for the selected layer
+        wrow = QHBoxLayout()
+        wrow.addWidget(QLabel("Win"))
+        self._fusion_wmin = _dbl(-1e6, 1e6, 0.0, 1.0, 1)
+        self._fusion_wmax = _dbl(-1e6, 1e6, 1.0, 1.0, 1)
+        wrow.addWidget(self._fusion_wmin); wrow.addWidget(self._fusion_wmax)
+        l.addLayout(wrow)
+
+        # Base (REF) visibility
+        self._base_vis_cb = QCheckBox("Show reference (base) layer")
+        self._base_vis_cb.setChecked(True)
+        l.addWidget(self._base_vis_cb)
+
+        # ── Wiring (guard against echo while loading values) ──────────────────
+        self._fusion_loading = False
+
+        def _cm_changed(i):
+            if not self._fusion_loading:
+                self.fusionColormapChanged.emit(i)
+        def _alpha_changed(v):
+            self._fusion_alpha_lbl.setText(f"{v}%")
+            if not self._fusion_loading:
+                self.fusionAlphaChanged.emit(v / 100.)
+        def _win_changed():
+            if not self._fusion_loading:
+                self.fusionWindowChanged.emit(
+                    self._fusion_wmin.value(), self._fusion_wmax.value())
+        def _base_vis(on):
+            if not self._fusion_loading:
+                self.baseVisibleToggled.emit(on)
+
+        self._fusion_cm.currentIndexChanged.connect(_cm_changed)
+        self._fusion_alpha.valueChanged.connect(_alpha_changed)
+        self._fusion_wmin.valueChanged.connect(lambda _v: _win_changed())
+        self._fusion_wmax.valueChanged.connect(lambda _v: _win_changed())
+        self._base_vis_cb.toggled.connect(_base_vis)
+        return gb
+
+    def setFusionTarget(self, name: str, colormap: int, alpha: float,
+                        wmin: float, wmax: float, is_base: bool,
+                        base_visible: bool) -> None:
+        """Load the selected layer's display params into the fusion controls."""
+        self._fusion_loading = True
+        try:
+            self._fusion_target_lbl.setText(
+                f"Selected: {name}" + ("  (base)" if is_base else "  (overlay)"))
+            self._fusion_cm.setCurrentIndex(max(0, min(3, colormap)))
+            self._fusion_alpha.setValue(int(round(alpha * 100)))
+            self._fusion_alpha_lbl.setText(f"{int(round(alpha*100))}%")
+            self._fusion_wmin.setValue(wmin)
+            self._fusion_wmax.setValue(wmax)
+            # Opacity only meaningful for overlays
+            self._fusion_alpha.setEnabled(not is_base)
+            self._base_vis_cb.setChecked(base_visible)
+        finally:
+            self._fusion_loading = False
 
     def _build_cine_group(self) -> QGroupBox:
         gb = QGroupBox("Cine / Loop"); l = QVBoxLayout(gb)

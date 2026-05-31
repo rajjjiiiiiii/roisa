@@ -47,10 +47,16 @@ class SliceView(QWidget):
         self._slice_idx = 0
 
         # Display
-        self._colormap       = 0      # 0=gray 1=hot 2=cool 3=viridis
+        self._colormap       = 0      # 0=gray 1=hot 2=cool 3=viridis (base)
+        self._base_visible   = True   # REF base layer composited or blacked out
         self._overlay_alpha  = 0.5
         self._interpolate    = False
         self._show_info      = True
+
+        # Fusion overlays: list of dicts
+        #   {arr:(nz,ny,nx) on REF grid, colormap:int, alpha:float,
+        #    wmin:float, wmax:float}
+        self._overlays: List[dict] = []
 
         # Crosshair (voxel coords on the in-plane axes)
         self._ch = -1   # horizontal-axis voxel index
@@ -91,6 +97,17 @@ class SliceView(QWidget):
 
     def setColormap(self, cm: int) -> None:
         self._colormap = cm;  self.update()
+
+    def colormap(self) -> int:
+        return self._colormap
+
+    def setBaseVisible(self, on: bool) -> None:
+        self._base_visible = on;  self.update()
+
+    def setOverlays(self, overlays: List[dict]) -> None:
+        """Set the fusion overlay layers (each on the REF grid)."""
+        self._overlays = overlays or []
+        self.update()
 
     def setOverlayAlpha(self, a: float) -> None:
         self._overlay_alpha = a;  self.update()
@@ -211,14 +228,49 @@ class SliceView(QWidget):
         b = np.clip(( 0.329 + 1.117*t - 2.384*t**2 + 2.209*t**3 - 0.815*t**4)*255,0,255).astype(np.uint8)
         return np.stack([r, g, b], -1)
 
+    def _overlay_slice(self, arr: np.ndarray) -> np.ndarray:
+        """Extract the current 2-D slice from an overlay array (REF grid)."""
+        if   self._axis == 2: return arr[self._slice_idx, :, :]
+        elif self._axis == 1: return arr[:, self._slice_idx, :]
+        else:                 return arr[:, :, self._slice_idx]
+
     def _build_rgba(self, img_sl: np.ndarray,
                     msk_sl: np.ndarray) -> np.ndarray:
-        wmin, wmax = self._vol.vmin(), self._vol.vmax()
-        wrange = max(wmax - wmin, 1e-6)
-        norm   = np.clip((img_sl - wmin) / wrange, 0., 1.)
-        gray   = (norm * 255).astype(np.uint8)
-        rgb    = self._apply_colormap(gray, self._colormap).astype(np.float32)
+        # ── Base layer (REF) — grayscale or its own colormap ──────────────────
+        if self._base_visible:
+            wmin, wmax = self._vol.vmin(), self._vol.vmax()
+            wrange = max(wmax - wmin, 1e-6)
+            norm   = np.clip((img_sl - wmin) / wrange, 0., 1.)
+            gray   = (norm * 255).astype(np.uint8)
+            rgb    = self._apply_colormap(gray, self._colormap).astype(np.float32)
+        else:
+            rgb    = np.zeros((*img_sl.shape, 3), np.float32)
 
+        # ── Fusion overlays — composite on top with per-layer colormap ────────
+        # Each overlay's effective opacity is modulated by its windowed
+        # intensity, so background stays transparent and hotspots show
+        # strongly (the classic PET-on-CT look).
+        base_rows, base_cols = rgb.shape[:2]
+        for ov in self._overlays:
+            arr = ov.get("arr")
+            if arr is None:
+                continue
+            try:
+                osl = self._overlay_slice(arr)
+            except (IndexError, ValueError):
+                continue
+            if osl.shape != (base_rows, base_cols):
+                continue
+            owmin = ov.get("wmin", 0.0)
+            owmax = ov.get("wmax", 1.0)
+            orange = max(owmax - owmin, 1e-6)
+            onorm  = np.clip((osl - owmin) / orange, 0., 1.)
+            ogray  = (onorm * 255).astype(np.uint8)
+            orgb   = self._apply_colormap(ogray, ov.get("colormap", 1)).astype(np.float32)
+            eff = (ov.get("alpha", 0.6) * onorm)[..., None]   # (h,w,1)
+            rgb = rgb * (1.0 - eff) + orgb * eff
+
+        # ── Mask label overlay (always topmost) ──────────────────────────────
         alpha = self._overlay_alpha
         for lbl in range(1, len(LABEL_COLORS)):
             color = LABEL_COLORS[lbl]

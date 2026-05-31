@@ -32,7 +32,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("ROISA — ROI Segmentation & Analysis")
         self.resize(1400, 860)
 
-        # ── Multi-image state ─────────────────────────────────────────────────
+        # ── Multi-image / fusion state ────────────────────────────────────────
+        # _volumes[0]  = reference (REF) — base layer + owns the ROI mask.
+        # _volumes[1+] = input images   — composited as fusion overlays.
+        # _active_vol  = layer currently *selected for editing* (fusion controls).
+        # _vol_visible = whether each layer is composited into the view.
         self._volumes:    list[ROIVolume] = [ROIVolume()]
         self._vol_visible: list[bool]     = [True]
         self._vol_names:   list[str]      = ["(none)"]
@@ -68,10 +72,16 @@ class MainWindow(QMainWindow):
         self._image_list.set_remove_enabled(0, False)
 
         # ── Wire ImageListWidget signals ───────────────────────────────────────
-        self._image_list.activateRequested.connect(self._activate_image)
+        self._image_list.activateRequested.connect(self._select_layer)
         self._image_list.visibilityToggled.connect(self._on_visibility_toggled)
         self._image_list.removeRequested.connect(self._remove_image)
         self._image_list.addRequested.connect(self._on_add_image)
+
+        # ── Wire fusion controls (Navigation Viewer → Data Manager) ────────────
+        self._panel.fusionColormapChanged.connect(self._on_fusion_colormap)
+        self._panel.fusionAlphaChanged.connect(self._on_fusion_alpha)
+        self._panel.fusionWindowChanged.connect(self._on_fusion_window)
+        self._panel.baseVisibleToggled.connect(self._on_base_visible)
 
         # ── Wire viewer / panel ────────────────────────────────────────────────
         self._panel.setViewer(self._viewer)
@@ -131,29 +141,72 @@ class MainWindow(QMainWindow):
                 self._image_list.set_remove_enabled(0, len(self._volumes) <= 1)
         self._image_list.set_active(self._active_vol)
 
+    # ── Fusion ──────────────────────────────────────────────────────────────────
+
+    def _rebuild_fusion(self) -> None:
+        """Recompose the viewer: REF base + each visible input as an overlay."""
+        ref = self._ref_vol()
+        if not ref.is_loaded():
+            return
+        # Base layer is always REF (owns geometry + mask)
+        self._viewer.setVolume(ref)
+        self._viewer.setBaseVisible(self._vol_visible[0])
+
+        overlays = []
+        for i in range(1, len(self._volumes)):
+            if not self._vol_visible[i]:
+                continue
+            vol = self._volumes[i]
+            arr = vol.resample_array_to(ref)
+            if arr is None:
+                continue
+            overlays.append({
+                "arr":      arr,
+                "colormap": vol.colormap(),
+                "alpha":    vol.fusion_alpha(),
+                "wmin":     vol.vmin(),
+                "wmax":     vol.vmax(),
+            })
+        self._viewer.setOverlays(overlays)
+        self._viewer.refresh()
+
+    def _push_fusion_target(self) -> None:
+        """Load the selected layer's display params into the panel's controls."""
+        idx = self._active_vol
+        if idx < 0 or idx >= len(self._volumes):
+            return
+        vol = self._volumes[idx]
+        is_base = (idx == 0)
+        name = "REF" if is_base else f"IN{idx}"
+        self._panel.setFusionTarget(
+            name        = name,
+            colormap    = vol.colormap() if not is_base else self._viewer.baseColormap(),
+            alpha       = vol.fusion_alpha(),
+            wmin        = vol.vmin(),
+            wmax        = vol.vmax(),
+            is_base     = is_base,
+            base_visible= self._vol_visible[0])
+
     # ── Image list actions ─────────────────────────────────────────────────────
 
-    def _activate_image(self, idx: int) -> None:
-        """Switch the viewer to show image at idx."""
+    def _select_layer(self, idx: int) -> None:
+        """Select a layer for editing (does not change what is composited)."""
         if idx < 0 or idx >= len(self._volumes):
             return
         self._active_vol = idx
-        self._viewer.setVolume(self._volumes[idx])
-        self._viewer.refresh()
         self._image_list.set_active(idx)
+        self._push_fusion_target()
         self._sb.showMessage(
-            "Viewing: REF — ROI operations active"
+            "Selected REF (base) — ROI operations apply here"
             if idx == 0
-            else f"Viewing: IN{idx} — ROI paint/segment always apply to REF")
+            else f"Selected IN{idx} — adjust its colormap / opacity / window")
 
     def _on_visibility_toggled(self, idx: int, on: bool) -> None:
         if idx < 0 or idx >= len(self._vol_visible):
             return
         self._vol_visible[idx] = on
         self._image_list.set_enabled(idx, on)
-        # If toggling off the active image, fall back to REF
-        if not on and idx == self._active_vol:
-            self._activate_image(0)
+        self._rebuild_fusion()
 
     def _remove_image(self, idx: int) -> None:
         if idx < 0 or idx >= len(self._volumes):
@@ -168,17 +221,16 @@ class MainWindow(QMainWindow):
         del self._volumes[idx]
         del self._vol_visible[idx]
         del self._vol_names[idx]
-        # Clamp active index
         if self._active_vol >= len(self._volumes):
             self._active_vol = len(self._volumes) - 1
         elif self._active_vol == idx:
             self._active_vol = 0
-        self._viewer.setVolume(self._volumes[self._active_vol])
-        self._viewer.refresh()
         self._sync_image_list()
+        self._rebuild_fusion()
+        self._push_fusion_target()
 
     def _on_add_image(self) -> None:
-        """Load an additional input image from a file/folder dialog."""
+        """Load an additional input image as a fusion overlay."""
         path = QFileDialog.getExistingDirectory(self, "Add Input DICOM Folder")
         if not path:
             path, _ = QFileDialog.getOpenFileName(
@@ -190,17 +242,47 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
         vol = ROIVolume()
         if vol.load(path):
+            # New overlays default to a 'hot' colormap so they stand out on REF
+            vol.set_colormap(1)
             self._volumes.append(vol)
             self._vol_visible.append(True)
             self._vol_names.append(path)
             self._sync_image_list()
+            self._rebuild_fusion()
             n = len(self._volumes) - 1
             self._sb.showMessage(
-                f"Added IN{n}: {os.path.basename(path)}")
+                f"Added IN{n}: {os.path.basename(path)} — fused over REF")
         else:
             self._sb.showMessage("Add failed — see console.")
             QMessageBox.warning(self, "Load error",
                                 f"Could not load:\n{path}")
+
+    # ── Fusion control handlers (from the Data Manager fusion group) ────────────
+
+    def _on_fusion_colormap(self, cm: int) -> None:
+        idx = self._active_vol
+        if idx == 0:
+            self._viewer.setBaseColormap(cm)   # REF base colormap
+        elif 0 <= idx < len(self._volumes):
+            self._volumes[idx].set_colormap(cm)
+        self._rebuild_fusion()
+
+    def _on_fusion_alpha(self, a: float) -> None:
+        idx = self._active_vol
+        if 0 <= idx < len(self._volumes):
+            self._volumes[idx].set_fusion_alpha(a)
+        self._rebuild_fusion()
+
+    def _on_fusion_window(self, lo: float, hi: float) -> None:
+        idx = self._active_vol
+        if 0 <= idx < len(self._volumes):
+            self._volumes[idx].set_window(lo, hi)
+        self._rebuild_fusion()
+
+    def _on_base_visible(self, on: bool) -> None:
+        self._vol_visible[0] = on
+        self._image_list.set_enabled(0, on)
+        self._rebuild_fusion()
 
     # ── Menu ──────────────────────────────────────────────────────────────────
 
@@ -274,8 +356,11 @@ class MainWindow(QMainWindow):
 
         self._panel.setVolume(vol)
         self._viewer.setVolume(vol)
+        self._viewer.setBaseVisible(True)
+        self._viewer.setOverlays([])
         self._install_ref_callback()
         self._sync_image_list()
+        self._push_fusion_target()
         self._sb.showMessage(
             f"Loaded REF: {os.path.basename(path)}  —  "
             f"{vol.nx()}×{vol.ny()}×{vol.nz()} voxels, "

@@ -250,6 +250,22 @@ class OrthoViewer(QWidget):
         for sv in (self._sag_view, self._cor_view, self._axi_view):
             sv.setColormap(cm)
 
+    def setOverlays(self, overlays) -> None:
+        """Push fusion overlay layers (on the REF grid) to all slice views."""
+        for sv in (self._sag_view, self._cor_view, self._axi_view):
+            sv.setOverlays(overlays)
+
+    def setBaseVisible(self, on: bool) -> None:
+        for sv in (self._sag_view, self._cor_view, self._axi_view):
+            sv.setBaseVisible(on)
+
+    def setBaseColormap(self, cm: int) -> None:
+        for sv in (self._sag_view, self._cor_view, self._axi_view):
+            sv.setColormap(cm)
+
+    def baseColormap(self) -> int:
+        return self._axi_view.colormap()
+
     def setOverlayAlpha(self, a: float) -> None:
         for sv in (self._sag_view, self._cor_view, self._axi_view):
             sv.setOverlayAlpha(a)

@@ -72,6 +72,13 @@ class ROIVolume:
         self._first_dicom_file: str = ""
         self._on_change = None   # optional callable fired after mask writes
 
+        # ── Fusion display state (per-layer) ──────────────────────────────────
+        self._colormap:     int   = 0      # 0=gray 1=hot 2=cool 3=viridis
+        self._fusion_alpha: float = 0.6    # opacity when used as an overlay
+        # Cache of this volume's intensity resampled onto another volume's grid,
+        # keyed by id(ref_volume); invalidated whenever this image reloads.
+        self._resample_cache: dict = {}
+
     # ── Loading ────────────────────────────────────────────────────────────────
 
     def load(self, path: str) -> bool:
@@ -104,6 +111,7 @@ class ROIVolume:
 
             self._mask = np.zeros(self._arr.shape, dtype=np.int16)
             self._undo_stack.clear()
+            self._resample_cache.clear()
             self._loaded = True
             return True
         except Exception as exc:
@@ -120,6 +128,47 @@ class ROIVolume:
     def set_change_callback(self, cb) -> None:
         """Register a zero-argument callable fired after mask writes."""
         self._on_change = cb
+
+    # ── Fusion display state ───────────────────────────────────────────────────
+
+    def colormap(self) -> int:              return self._colormap
+    def set_colormap(self, cm: int) -> None: self._colormap = int(cm)
+
+    def fusion_alpha(self) -> float:               return self._fusion_alpha
+    def set_fusion_alpha(self, a: float) -> None:  self._fusion_alpha = float(a)
+
+    def resample_array_to(self, ref: "ROIVolume") -> Optional[np.ndarray]:
+        """Return this volume's intensity resampled onto `ref`'s grid (nz,ny,nx).
+
+        Used when compositing this image as a fusion overlay on top of the
+        reference, so slice indices line up.  Result is cached per reference.
+        """
+        if not self._loaded or ref is None or not ref.is_loaded():
+            return None
+        # Fast path: identical geometry → no resample needed
+        if (self._arr is not None and ref._arr is not None
+                and self._arr.shape == ref._arr.shape
+                and self._spacing == ref._spacing
+                and self._origin  == ref._origin):
+            return self._arr
+        key = id(ref)
+        cached = self._resample_cache.get(key)
+        if cached is not None and cached[0] == ref._arr.shape:
+            return cached[1]
+        try:
+            res = sitk.Resample(
+                sitk.Cast(self._sitk_img, sitk.sitkFloat32),
+                ref._sitk_img,                       # reference grid
+                sitk.Transform(),                    # identity (already aligned)
+                sitk.sitkLinear,
+                0.0,
+                sitk.sitkFloat32)
+            arr = sitk.GetArrayFromImage(res)
+            self._resample_cache[key] = (ref._arr.shape, arr)
+            return arr
+        except Exception as exc:
+            print(f"[resample_array_to] {exc}")
+            return None
 
     def _notify_change(self) -> None:
         if self._on_change is not None:
