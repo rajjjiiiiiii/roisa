@@ -88,6 +88,13 @@ class MainWindow(QMainWindow):
         self._panel.manualTransformRequested.connect(self._on_manual_transform)
         self._panel.resetRegistrationRequested.connect(self._on_reset_registration)
 
+        # ── Wire Quantification operator ───────────────────────────────────────
+        self._panel.suvComputeRequested.connect(self._on_suv_compute)
+        self._panel.suvAutofillRequested.connect(self._on_suv_autofill)
+        self._panel.suvExportRequested.connect(self._on_suv_export)
+        self._panel.tacComputeRequested.connect(self._on_tac_compute)
+        self._last_quant_rows = []
+
         # ── Wire viewer / panel ────────────────────────────────────────────────
         self._panel.setViewer(self._viewer)
         self._viewer.positionChanged.connect(self._panel.onPositionChanged)
@@ -150,6 +157,11 @@ class MainWindow(QMainWindow):
             [(f"IN{i}  ({os.path.basename(self._vol_names[i])})"
               if self._vol_names[i] != "(none)" else f"IN{i}", i)
              for i in range(1, len(self._volumes))])
+
+        # Keep the Quantification activity-image dropdown in sync (REF + inputs)
+        quant_items = [("REF", 0)]
+        quant_items += [(f"IN{i}", i) for i in range(1, len(self._volumes))]
+        self._panel.setQuantImages(quant_items)
 
     # ── Fusion ──────────────────────────────────────────────────────────────────
 
@@ -347,6 +359,95 @@ class MainWindow(QMainWindow):
         else:
             self._panel.setRegStatus(f"IN{moving_idx} has no registration to reset.")
         self._rebuild_fusion()
+
+    # ── Quantification handlers ──────────────────────────────────────────────────
+
+    def _activity_array(self, idx: int):
+        """Return the activity image at `idx` resampled onto the REF grid."""
+        ref = self._ref_vol()
+        if idx <= 0 or idx >= len(self._volumes):
+            return ref.arr
+        return self._volumes[idx].resample_array_to(ref)
+
+    def _on_suv_compute(self, activity_idx: int) -> None:
+        from ..core.suv import suv_factor, roi_suv_stats
+        ref = self._ref_vol()
+        if not ref.is_loaded():
+            self._sb.showMessage("Load a reference image first.")
+            return
+        act = self._activity_array(activity_idx)
+        if act is None or ref.mask is None:
+            self._sb.showMessage("No activity image / ROI available.")
+            return
+        factor = suv_factor(self._panel.suvParams())
+        import numpy as np
+        labels = [int(l) for l in np.unique(ref.mask) if l != 0]
+        rows = []
+        for lbl in labels:
+            st = roi_suv_stats(act, ref.mask, lbl, ref.spacing_xyz(), factor)
+            if st:
+                rows.append(st)
+        self._last_quant_rows = rows
+        self._panel.setQuantResults(rows)
+        self._sb.showMessage(
+            f"SUV computed for {len(rows)} ROI(s) on "
+            f"{'REF' if activity_idx == 0 else 'IN'+str(activity_idx)} "
+            f"(factor {factor:.4e})")
+
+    def _on_suv_autofill(self, activity_idx: int) -> None:
+        from ..core.suv import extract_suv_params
+        if activity_idx < 0 or activity_idx >= len(self._volumes):
+            return
+        vol = self._volumes[activity_idx]
+        path = vol.first_dicom_file() or self._vol_names[activity_idx]
+        p = extract_suv_params(path)
+        if p is None:
+            self._sb.showMessage(
+                "Auto-fill failed — no DICOM metadata (pydicom). Enter values manually.")
+            return
+        self._panel.setSuvParams(p)
+        self._sb.showMessage("SUV parameters auto-filled from DICOM.")
+
+    def _on_suv_export(self) -> None:
+        if not self._last_quant_rows:
+            self._sb.showMessage("Nothing to export — Compute SUV first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export SUV CSV", "roisa_suv.csv", "CSV (*.csv)")
+        if not path:
+            return
+        try:
+            import csv
+            with open(path, "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["Label", "Voxels", "Volume_mL",
+                            "SUVmean", "SUVmax", "SUVpeak", "TLG"])
+                for d in self._last_quant_rows:
+                    w.writerow([d["label"], d["voxels"], f"{d['volume_ml']:.4f}",
+                                f"{d['suv_mean']:.4f}", f"{d['suv_max']:.4f}",
+                                f"{d['suv_peak']:.4f}", f"{d['tlg']:.4f}"])
+            self._sb.showMessage(f"Exported SUV table → {os.path.basename(path)}")
+        except Exception as exc:
+            QMessageBox.warning(self, "Export error", str(exc))
+
+    def _on_tac_compute(self, label: int, activity_idx: int) -> None:
+        from ..core.suv import suv_factor, time_activity_curve
+        ref = self._ref_vol()
+        if not ref.is_loaded() or ref.mask is None:
+            return
+        # Frames = the input images (dynamic series); fall back to REF if none
+        frames = [self._volumes[i].resample_array_to(ref)
+                  for i in range(1, len(self._volumes))]
+        if not frames:
+            frames = [ref.arr]
+        factor = suv_factor(self._panel.suvParams())
+        tac = time_activity_curve(frames, ref.mask, label, factor)
+        if not tac:
+            self._sb.showMessage(f"Label {label} not present in the ROI mask.")
+            self._panel.setTac([])
+            return
+        self._panel.setTac(tac, ylabel="SUVmean")
+        self._sb.showMessage(f"TAC plotted for label {label} across {len(tac)} frame(s).")
 
     # ── Menu ──────────────────────────────────────────────────────────────────
 

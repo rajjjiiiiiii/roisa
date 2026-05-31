@@ -22,8 +22,10 @@ from PyQt6.QtWidgets import (
 
 from ..core.roi_volume import ROIVolume
 from ..core.roi_algorithms import ROIAlgorithms
+from ..core.suv import SUVParams
 from .histogram_widget import HistogramWidget
 from .dicom_tag_widget  import DicomTagWidget
+from .tac_widget        import TacWidget
 
 
 # ── Background segmentation worker ────────────────────────────────────────────
@@ -79,6 +81,11 @@ class ToolPanel(QWidget):
     registerRequested        = pyqtSignal(int, str, int)     # movingIdx, mode, iters
     manualTransformRequested = pyqtSignal(int, float, float, float, float, float, float)
     resetRegistrationRequested = pyqtSignal(int)
+    # Quantification operator (activityIdx indexes loaded images: 0=REF, 1+=inputs)
+    suvComputeRequested  = pyqtSignal(int)
+    suvAutofillRequested = pyqtSignal(int)
+    suvExportRequested   = pyqtSignal()
+    tacComputeRequested  = pyqtSignal(int, int)              # label, activityIdx
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -93,7 +100,8 @@ class ToolPanel(QWidget):
 
         # ── Operator drop-down ────────────────────────────────────────────────
         self._op_combo = QComboBox()
-        self._op_combo.addItems(["Navigation Viewer", "ROI", "Registration", "Measure"])
+        self._op_combo.addItems(["Navigation Viewer", "ROI", "Registration",
+                                 "Measure", "Quantification"])
         self._op_combo.setStyleSheet(
             "QComboBox{background:#1c2a38;color:#9fcfe8;font-weight:bold;"
             "font-size:12px;padding:5px 10px;border:1px solid #2e5070;"
@@ -113,6 +121,7 @@ class ToolPanel(QWidget):
         self._op_stack.addWidget(self._build_roi_op())
         self._op_stack.addWidget(self._build_registration_op())
         self._op_stack.addWidget(self._build_measure_op())
+        self._op_stack.addWidget(self._build_quant_op())
         ml.addWidget(self._op_stack, 1)
 
         self._op_combo.currentIndexChanged.connect(self._on_op_changed)
@@ -199,6 +208,14 @@ class ToolPanel(QWidget):
         l.setContentsMargins(0,0,0,0); l.setSpacing(0)
         l.addWidget(_scroll_page(self._build_auto_reg_group(),
                                   self._build_manual_reg_group()))
+        return w
+
+    def _build_quant_op(self) -> QWidget:
+        w = QWidget(); l = QVBoxLayout(w)
+        l.setContentsMargins(0,0,0,0); l.setSpacing(0)
+        l.addWidget(_scroll_page(self._build_suv_param_group(),
+                                  self._build_quant_table_group(),
+                                  self._build_tac_group()))
         return w
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -775,6 +792,140 @@ class ToolPanel(QWidget):
         if hasattr(self, "_reg_status") and self._reg_status:
             self._reg_status.setText(msg)
 
+    # ── Quantification groups ───────────────────────────────────────────────────
+
+    def _build_suv_param_group(self) -> QGroupBox:
+        gb = QGroupBox("SUV Parameters"); l = QVBoxLayout(gb)
+
+        arow = QHBoxLayout(); arow.addWidget(QLabel("Activity image"))
+        self._quant_img = QComboBox()
+        self._quant_img.setToolTip("PET / activity-concentration image (Bq/mL)")
+        arow.addWidget(self._quant_img, 1); l.addLayout(arow)
+
+        trow = QHBoxLayout(); trow.addWidget(QLabel("SUV type"))
+        self._suv_type = QComboBox(); self._suv_type.addItems(["Body Weight", "Lean Body Mass"])
+        trow.addWidget(self._suv_type, 1); l.addLayout(trow)
+
+        def field(label, spin):
+            row = QHBoxLayout(); lab = QLabel(label); lab.setFixedWidth(118)
+            row.addWidget(lab); row.addWidget(spin); l.addLayout(row); return spin
+
+        self._suv_weight = field("Weight (kg)",      _dbl(1, 500, 70, 1, 1))
+        self._suv_height = field("Height (cm)",      _dbl(1, 260, 170, 1, 1))
+        self._suv_sex    = QComboBox(); self._suv_sex.addItems(["Male", "Female"])
+        srow = QHBoxLayout(); slab = QLabel("Sex (for LBM)"); slab.setFixedWidth(118)
+        srow.addWidget(slab); srow.addWidget(self._suv_sex, 1); l.addLayout(srow)
+        self._suv_dose   = field("Dose (MBq)",       _dbl(0, 100000, 370, 1, 2))
+        self._suv_half   = field("Half-life (s)",    _dbl(1, 100000, 6586.2, 1, 1))
+        self._suv_decay  = field("Inj→scan (min)",   _dbl(0, 1000, 60, 1, 1))
+
+        self._suv_autofill = QPushButton("Auto-fill from DICOM")
+        l.addWidget(self._suv_autofill)
+        self._suv_autofill.clicked.connect(
+            lambda: self.suvAutofillRequested.emit(self.activityIndex()))
+        return gb
+
+    def _build_quant_table_group(self) -> QGroupBox:
+        gb = QGroupBox("ROI Quantification"); l = QVBoxLayout(gb)
+        self._quant_table = QTableWidget(0, 6)
+        self._quant_table.setHorizontalHeaderLabels(
+            ["Label", "Vol (mL)", "SUVmean", "SUVmax", "SUVpeak", "TLG"])
+        self._quant_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch)
+        self._quant_table.verticalHeader().setVisible(False)
+        self._quant_table.setMinimumHeight(150)
+        l.addWidget(self._quant_table)
+
+        brow = QHBoxLayout()
+        self._quant_compute = QPushButton("Compute SUV")
+        self._quant_compute.setStyleSheet(
+            "QPushButton{background:#1c3a55;color:#cfe;font-weight:bold;padding:5px;}"
+            "QPushButton:hover{background:#24507a;}")
+        self._quant_export = QPushButton("Export CSV")
+        brow.addWidget(self._quant_compute); brow.addWidget(self._quant_export)
+        l.addLayout(brow)
+        self._quant_compute.clicked.connect(
+            lambda: self.suvComputeRequested.emit(self.activityIndex()))
+        self._quant_export.clicked.connect(self.suvExportRequested.emit)
+        return gb
+
+    def _build_tac_group(self) -> QGroupBox:
+        gb = QGroupBox("Time-Activity Curve  (across loaded frames)")
+        l = QVBoxLayout(gb)
+        row = QHBoxLayout(); row.addWidget(QLabel("Label"))
+        self._tac_label = QComboBox()
+        for i in range(1, 11): self._tac_label.addItem(f"Label {i}", i)
+        row.addWidget(self._tac_label, 1)
+        self._tac_btn = QPushButton("Plot TAC")
+        row.addWidget(self._tac_btn); l.addLayout(row)
+        self._tac_widget = TacWidget()
+        l.addWidget(self._tac_widget)
+        self._tac_btn.clicked.connect(
+            lambda: self.tacComputeRequested.emit(
+                self._tac_label.currentData(), self.activityIndex()))
+        return gb
+
+    # ── Quantification helpers (called by MainWindow) ───────────────────────────
+
+    def setQuantImages(self, items) -> None:
+        """items = list of (label, idx); idx 0=REF, 1+=inputs."""
+        if not hasattr(self, "_quant_img"):
+            return
+        cur = self._quant_img.currentData()
+        self._quant_img.blockSignals(True)
+        self._quant_img.clear()
+        for label, idx in items:
+            self._quant_img.addItem(label, idx)
+        if cur is not None:
+            i = self._quant_img.findData(cur)
+            if i >= 0: self._quant_img.setCurrentIndex(i)
+        self._quant_img.blockSignals(False)
+
+    def activityIndex(self) -> int:
+        if hasattr(self, "_quant_img") and self._quant_img.count() > 0:
+            d = self._quant_img.currentData()
+            return int(d) if d is not None else 0
+        return 0
+
+    def suvParams(self) -> SUVParams:
+        return SUVParams(
+            suv_type=self._suv_type.currentIndex(),
+            weight_kg=self._suv_weight.value(),
+            height_cm=self._suv_height.value(),
+            sex=self._suv_sex.currentIndex(),
+            dose_mbq=self._suv_dose.value(),
+            half_life_s=self._suv_half.value(),
+            decay_min=self._suv_decay.value())
+
+    def setSuvParams(self, p: SUVParams) -> None:
+        self._suv_type.setCurrentIndex(p.suv_type)
+        self._suv_weight.setValue(p.weight_kg)
+        self._suv_height.setValue(p.height_cm)
+        self._suv_sex.setCurrentIndex(p.sex)
+        self._suv_dose.setValue(p.dose_mbq)
+        self._suv_half.setValue(p.half_life_s)
+        self._suv_decay.setValue(p.decay_min)
+
+    def setQuantResults(self, rows) -> None:
+        self._quant_table.setRowCount(len(rows))
+        for r, d in enumerate(rows):
+            vals = [str(d["label"]), f"{d['volume_ml']:.3f}",
+                    f"{d['suv_mean']:.2f}", f"{d['suv_max']:.2f}",
+                    f"{d['suv_peak']:.2f}", f"{d['tlg']:.2f}"]
+            for c, v in enumerate(vals):
+                self._quant_table.setItem(r, c, QTableWidgetItem(v))
+
+    def quantResultsAsRows(self):
+        rows = []
+        for r in range(self._quant_table.rowCount()):
+            rows.append([self._quant_table.item(r, c).text()
+                         if self._quant_table.item(r, c) else ""
+                         for c in range(self._quant_table.columnCount())])
+        return rows
+
+    def setTac(self, values, ylabel="SUVmean") -> None:
+        self._tac_widget.set_values(values, ylabel)
+
     def _build_measure_group(self) -> QGroupBox:
         gb = QGroupBox("Measurement Tool"); l = QVBoxLayout(gb)
         l.addWidget(QLabel("Select measurement type below,\nthen click in any slice view."))
@@ -851,6 +1002,7 @@ class ToolPanel(QWidget):
         if op == 0: return ""        # Navigation Viewer
         if op == 2: return ""        # Registration — no painting
         if op == 3: return "measure" # Measure
+        if op == 4: return ""        # Quantification — no painting
         return self._tool_combo.currentText().lower() if hasattr(self, '_tool_combo') else "paint"
 
     def brushRadius(self) -> int:
