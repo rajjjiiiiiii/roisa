@@ -1,0 +1,10 @@
+# PyQt6 6.8+ requires macOS 13+; pin to 6.7.x for macOS 12 compatibility
+PyQt6>=6.6,<6.8
+PyQt6-Qt6>=6.7,<6.8
+vtk>=9.3
+SimpleITK>=2.3
+numpy>=1.24
+scipy>=1.10
+pydicom>=2.4
+imageio>=2.31
+imageio-ffmpeg>=0.4
