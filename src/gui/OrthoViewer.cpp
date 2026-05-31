@@ -314,6 +314,32 @@ void OrthoViewer::setAllLabelsVisible(bool v)
     m_axiView->setAllLabelsVisible(v);
 }
 
+void OrthoViewer::setProjectionMode(int mode)
+{
+    m_sagView->setProjectionMode(mode);
+    m_corView->setProjectionMode(mode);
+    m_axiView->setProjectionMode(mode);
+}
+
+void OrthoViewer::setSlab(int slab)
+{
+    m_sagView->setSlab(slab);
+    m_corView->setSlab(slab);
+    m_axiView->setSlab(slab);
+}
+
+void OrthoViewer::setShowColorbar(bool on)
+{
+    m_sagView->setShowColorbar(on);
+    m_corView->setShowColorbar(on);
+    m_axiView->setShowColorbar(on);
+}
+
+void OrthoViewer::setVtkClip(bool enabled, int axis, double frac)
+{
+    m_vtkView->setClip(enabled, axis, frac);
+}
+
 void OrthoViewer::setMeasureMode(int mode)
 {
     auto m = static_cast<SliceView::MeasureMode>(mode);

@@ -150,9 +150,15 @@ private:
     QSlider*     m_alphaSlider{nullptr};
     QCheckBox*   m_interpolateCheck{nullptr};
     QCheckBox*   m_infoOverlayCheck{nullptr};
+    QCheckBox*   m_colorbarCheck{nullptr};
+    QComboBox*   m_projCombo{nullptr};
+    QSpinBox*    m_slabSpin{nullptr};
     QPushButton* m_showAllBtn{nullptr};
     QPushButton* m_hideAllBtn{nullptr};
     QPushButton* m_resetZoomBtn{nullptr};
+    QCheckBox*   m_clipCheck{nullptr};
+    QComboBox*   m_clipAxisCombo{nullptr};
+    QSlider*     m_clipSlider{nullptr};
 
     // ── Viewer tab — Cine player ───────────────────────────────────────────────
     QPushButton* m_cinePlayBtn{nullptr};

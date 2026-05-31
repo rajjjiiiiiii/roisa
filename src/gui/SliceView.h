@@ -61,6 +61,9 @@ public:
     void setLabelVisible(int lbl, bool v)  { if(lbl>=0&&lbl<256) { m_labelVis[lbl]=v; update(); } }
     void setAllLabelsVisible(bool v)   { m_labelVis.fill(v); update(); }
     void setShowInfoOverlay(bool on)   { m_showInfoOverlay = on; update(); }
+    void setProjectionMode(int mode)   { m_projMode = mode; update(); }
+    void setSlab(int slab)             { m_slab = slab; update(); }
+    void setShowColorbar(bool on)      { m_showColorbar = on; update(); }
     void resetZoom();
 
     // ── Measurement API ────────────────────────────────────────────────────────
@@ -123,6 +126,9 @@ private:
     float m_overlayAlpha{1.0f};
     bool  m_showInfoOverlay{true};
     bool  m_baseVisible{true};                 // REF base layer composited?
+    int   m_projMode{0};                       // 0=slice 1=MIP 2=MinIP
+    int   m_slab{0};                           // projection half-width
+    bool  m_showColorbar{false};
     std::vector<FusionLayer> m_overlays;       // fusion overlays on REF grid
     std::array<bool,256> m_labelVis;   // label 0..255 visibility
 

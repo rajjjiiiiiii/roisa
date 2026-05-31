@@ -981,6 +981,15 @@ QGroupBox* ToolPanel::buildDisplayGroup()
     m_infoOverlayCheck=new QCheckBox("Show info overlay (W/L + position)");
     m_infoOverlayCheck->setChecked(true);
     l->addWidget(m_infoOverlayCheck);
+    m_colorbarCheck=new QCheckBox("Show colorbar legend"); l->addWidget(m_colorbarCheck);
+
+    auto* prow=new QHBoxLayout; prow->addWidget(new QLabel("Projection"));
+    m_projCombo=new QComboBox; m_projCombo->addItems({"Slice","MIP (max)","MinIP (min)"});
+    prow->addWidget(m_projCombo,1);
+    prow->addWidget(new QLabel("Slab±"));
+    m_slabSpin=intSpin(0,200,0); m_slabSpin->setMaximumWidth(60);
+    prow->addWidget(m_slabSpin); l->addLayout(prow);
+
     auto* brow=new QHBoxLayout;
     m_showAllBtn=new QPushButton("Show All"); m_hideAllBtn=new QPushButton("Hide All");
     m_resetZoomBtn=new QPushButton("Reset Zoom");
@@ -994,6 +1003,12 @@ QGroupBox* ToolPanel::buildDisplayGroup()
         if(m_viewer) m_viewer->setInterpolate(on);});
     connect(m_infoOverlayCheck,&QCheckBox::toggled,this,[this](bool on){
         if(m_viewer) m_viewer->setShowInfoOverlay(on);});
+    connect(m_colorbarCheck,&QCheckBox::toggled,this,[this](bool on){
+        if(m_viewer) m_viewer->setShowColorbar(on);});
+    connect(m_projCombo,QOverload<int>::of(&QComboBox::currentIndexChanged),this,[this](int i){
+        if(m_viewer) m_viewer->setProjectionMode(i);});
+    connect(m_slabSpin,QOverload<int>::of(&QSpinBox::valueChanged),this,[this](int v){
+        if(m_viewer) m_viewer->setSlab(v);});
     connect(m_showAllBtn,&QPushButton::clicked,this,[this]{ if(m_viewer) m_viewer->setAllLabelsVisible(true);});
     connect(m_hideAllBtn,&QPushButton::clicked,this,[this]{ if(m_viewer) m_viewer->setAllLabelsVisible(false);});
     connect(m_resetZoomBtn,&QPushButton::clicked,this,[this]{ if(m_viewer) m_viewer->resetAllZoom();});
@@ -1164,6 +1179,24 @@ QGroupBox* ToolPanel::build3DGroup()
 
     m_vtkResetCamBtn = new QPushButton("Reset Camera");
     l->addWidget(m_vtkResetCamBtn);
+
+    // Clip plane
+    m_clipCheck = new QCheckBox("Clip plane"); l->addWidget(m_clipCheck);
+    auto* crow = new QHBoxLayout; crow->addWidget(new QLabel("Axis"));
+    m_clipAxisCombo = new QComboBox; m_clipAxisCombo->addItems({"X","Y","Z"});
+    m_clipAxisCombo->setCurrentIndex(2);
+    crow->addWidget(m_clipAxisCombo);
+    m_clipSlider = new QSlider(Qt::Horizontal); m_clipSlider->setRange(0,100); m_clipSlider->setValue(50);
+    crow->addWidget(m_clipSlider, 1); l->addLayout(crow);
+    auto applyClip = [this]{
+        if (m_viewer) m_viewer->setVtkClip(m_clipCheck->isChecked(),
+                                           m_clipAxisCombo->currentIndex(),
+                                           m_clipSlider->value() / 100.0);
+    };
+    connect(m_clipCheck, &QCheckBox::toggled, this, [applyClip](bool){ applyClip(); });
+    connect(m_clipAxisCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [applyClip](int){ applyClip(); });
+    connect(m_clipSlider, &QSlider::valueChanged, this, [applyClip](int){ applyClip(); });
 
     l->addWidget(new QLabel("Resample to isotropic voxels:"));
     auto* irow = new QHBoxLayout;

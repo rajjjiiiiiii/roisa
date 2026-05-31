@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <set>
 #include <stdexcept>
@@ -444,6 +445,35 @@ void ROIVolume::getIntensitySlice(int axis, int idx,
     if (!m_displayImg) return;
     sliceFromBuffer(m_displayImg->GetBufferPointer(),
                     nx(), ny(), nz(), axis, idx, dst);
+}
+
+void ROIVolume::getImageSliceProj(int axis, int idx, int mode, int slab,
+                                   std::vector<float>& dst) const
+{
+    if (!m_displayImg) return;
+    if (mode == 0) { getIntensitySlice(axis, idx, dst); return; }
+    const float* buf = m_displayImg->GetBufferPointer();
+    const int NX = nx(), NY = ny(), NZ = nz();
+    const int rows = sliceRows(axis), cols = sliceCols(axis);
+    dst.resize(rows * cols);
+
+    const int pn = (axis == 0) ? NX : (axis == 1) ? NY : NZ;
+    int lo = 0, hi = pn;
+    if (slab > 0) { lo = std::max(0, idx - slab); hi = std::min(pn, idx + slab + 1); }
+
+    for (int row = 0; row < rows; ++row)
+    for (int col = 0; col < cols; ++col) {
+        float acc = (mode == 2) ?  std::numeric_limits<float>::max()
+                                : -std::numeric_limits<float>::max();
+        for (int k = lo; k < hi; ++k) {
+            int lin = (axis == 0) ? linearIdx(k, row, col, NX, NY)
+                    : (axis == 1) ? linearIdx(row, k, col, NX, NY)
+                                  : linearIdx(row, col, k, NX, NY);
+            const float v = buf[lin];
+            acc = (mode == 2) ? std::min(acc, v) : std::max(acc, v);
+        }
+        dst[row * cols + col] = acc;
+    }
 }
 
 void ROIVolume::getMaskSlice(int axis, int idx,

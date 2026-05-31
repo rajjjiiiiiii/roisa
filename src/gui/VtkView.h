@@ -25,6 +25,8 @@ class vtkVolumeProperty;
 class vtkImageData;
 class vtkActor;
 class vtkPolyDataMapper;
+class vtkPlane;
+class vtkOrientationMarkerWidget;
 #endif
 
 class VtkView : public QWidget
@@ -48,6 +50,9 @@ public:
     void setRenderMode(int mode);
     int  renderMode() const { return m_renderMode; }
 
+    /// Clip plane along axis (0=X,1=Y,2=Z) at fractional position frac in [0,1].
+    void setClip(bool enabled, int axis, double frac);
+
     /// Returns true when compiled with VTK support.
     static bool isAvailable();
 
@@ -55,6 +60,9 @@ private:
     ROIVolume* m_vol      {nullptr};
     int        m_renderMode{2};
     int        m_surfLabel {-1};
+    bool       m_clipOn    {false};
+    int        m_clipAxis  {2};
+    double     m_clipFrac  {0.5};
 
 #ifdef ROISA_USE_VTK
     QVTKOpenGLNativeWidget*                       m_vtkWidget {nullptr};
@@ -73,7 +81,10 @@ private:
         vtkSmartPointer<vtkPolyDataMapper> mapper;
     };
     std::vector<LabelSurface> m_surfaces;
+    vtkSmartPointer<vtkPlane>                     m_clipPlane;
+    vtkSmartPointer<vtkOrientationMarkerWidget>   m_orientWidget;
 
+    void applyClip();
     void initVtk();
     void copyItkToVtk();
     void rebuildSurfaces();

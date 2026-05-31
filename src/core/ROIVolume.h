@@ -161,6 +161,11 @@ public:
     void getIntensitySlice(int axis, int idx, std::vector<float>&   dst) const;
     void getMaskSlice     (int axis, int idx, std::vector<int16_t>& dst) const;
 
+    /// Projection slice (same layout as getIntensitySlice).
+    /// mode: 0=single 1=MIP(max) 2=MinIP(min); slab: half-width (0 = full volume).
+    void getImageSliceProj(int axis, int idx, int mode, int slab,
+                           std::vector<float>& dst) const;
+
     // ── Raw ITK access (for algorithm implementations) ─────────────────────────
     FloatPtr  displayImage() const { return m_displayImg; }
     Int16Ptr  maskImage()    const { return m_mask; }

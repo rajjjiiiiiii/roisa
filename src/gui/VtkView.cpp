@@ -29,6 +29,10 @@
 #include <vtkSmartVolumeMapper.h>
 #include <vtkVolume.h>
 #include <vtkVolumeProperty.h>
+#include <vtkPlane.h>
+#include <vtkAnnotatedCubeActor.h>
+#include <vtkOrientationMarkerWidget.h>
+#include <vtkTextProperty.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -86,10 +90,44 @@ void VtkView::initVtk()
     m_volActor->SetProperty(m_volProp);
     m_renderer->AddVolume(m_volActor);
 
+    m_clipPlane = vtkSmartPointer<vtkPlane>::New();
+
+    // Anatomical orientation marker (A/P/L/R/S/I cube, bottom-left)
+    auto cube = vtkSmartPointer<vtkAnnotatedCubeActor>::New();
+    cube->SetXPlusFaceText("L");  cube->SetXMinusFaceText("R");
+    cube->SetYPlusFaceText("P");  cube->SetYMinusFaceText("A");
+    cube->SetZPlusFaceText("S");  cube->SetZMinusFaceText("I");
+    cube->GetTextEdgesProperty()->SetColor(0.9, 0.9, 0.4);
+    cube->GetCubeProperty()->SetColor(0.2, 0.25, 0.32);
+    m_orientWidget = vtkSmartPointer<vtkOrientationMarkerWidget>::New();
+    m_orientWidget->SetOrientationMarker(cube);
+    m_orientWidget->SetInteractor(m_renWin->GetInteractor());
+    m_orientWidget->SetViewport(0.0, 0.0, 0.22, 0.22);
+    m_orientWidget->SetEnabled(1);
+    m_orientWidget->InteractiveOff();
+
     // Fill the widget area
     auto* lay = new QVBoxLayout(this);
     lay->setContentsMargins(0, 0, 0, 0);
     lay->addWidget(m_vtkWidget);
+}
+
+void VtkView::applyClip()
+{
+    if (m_volMapper) m_volMapper->RemoveAllClippingPlanes();
+    for (auto& s : m_surfaces)
+        if (s.mapper) s.mapper->RemoveAllClippingPlanes();
+    if (!m_clipOn || !m_vol || !m_vol->isLoaded()) return;
+
+    const double sp = m_vol->voxelSpacingMm();
+    const double dim[3] = { m_vol->nx() * sp, m_vol->ny() * sp, m_vol->nz() * sp };
+    double normal[3] = {0, 0, 0}; normal[m_clipAxis] = 1.0;
+    double origin[3] = {0, 0, 0}; origin[m_clipAxis] = m_clipFrac * dim[m_clipAxis];
+    m_clipPlane->SetOrigin(origin);
+    m_clipPlane->SetNormal(normal);
+    if (m_volMapper) m_volMapper->AddClippingPlane(m_clipPlane);
+    for (auto& s : m_surfaces)
+        if (s.mapper) s.mapper->AddClippingPlane(m_clipPlane);
 }
 
 // ── ITK display image → vtkImageData ─────────────────────────────────────────
@@ -202,6 +240,8 @@ void VtkView::applyRenderMode()
 
     if (m_volActor) m_volActor->SetVisibility(showVol  ? 1 : 0);
     for (auto& s : m_surfaces) s.actor->SetVisibility(showSurf ? 1 : 0);
+
+    applyClip();   // keep any active clip plane attached after scene rebuilds
 }
 
 #endif // ROISA_USE_VTK
@@ -296,5 +336,14 @@ void VtkView::setRenderMode(int mode)
 #ifdef ROISA_USE_VTK
     applyRenderMode();
     m_renWin->Render();
+#endif
+}
+
+void VtkView::setClip(bool enabled, int axis, double frac)
+{
+    m_clipOn = enabled; m_clipAxis = axis; m_clipFrac = frac;
+#ifdef ROISA_USE_VTK
+    applyClip();
+    if (m_renWin) m_renWin->Render();
 #endif
 }

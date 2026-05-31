@@ -167,7 +167,7 @@ void SliceView::paintEvent(QPaintEvent*)
 
     m_intensityBuf.resize(rows*cols);
     m_maskBuf.resize(rows*cols);
-    m_vol->getIntensitySlice(m_axis, m_sliceIdx, m_intensityBuf);
+    m_vol->getImageSliceProj(m_axis, m_sliceIdx, m_projMode, m_slab, m_intensityBuf);
     m_vol->getMaskSlice     (m_axis, m_sliceIdx, m_maskBuf);
 
     float vmin  = m_vol->vmin(), vmax = m_vol->vmax();
@@ -236,15 +236,44 @@ void SliceView::paintEvent(QPaintEvent*)
         : Qt::FastTransformation;
     painter.drawImage(ir, img.scaled(ir.width(), ir.height(), Qt::IgnoreAspectRatio, tm));
 
-    // Crosshair
-    float scX = (float)ir.width()  / cols;
-    float scY = (float)ir.height() / rows;
-    int crossRow = (int)(m_crossA * scY) + ir.top();
-    int crossCol = (int)(m_crossB * scX) + ir.left();
-    QPen chPen(QColor(255,230,0,180), 1, Qt::DashLine);
-    painter.setPen(chPen);
-    painter.drawLine(ir.left(),  crossRow, ir.right(),  crossRow);
-    painter.drawLine(crossCol,   ir.top(), crossCol,    ir.bottom());
+    // Crosshair (hidden in projection mode — no single slice position)
+    if (m_projMode == 0) {
+        float scX = (float)ir.width()  / cols;
+        float scY = (float)ir.height() / rows;
+        int crossRow = (int)(m_crossA * scY) + ir.top();
+        int crossCol = (int)(m_crossB * scX) + ir.left();
+        QPen chPen(QColor(255,230,0,180), 1, Qt::DashLine);
+        painter.setPen(chPen);
+        painter.drawLine(ir.left(),  crossRow, ir.right(),  crossRow);
+        painter.drawLine(crossCol,   ir.top(), crossCol,    ir.bottom());
+    }
+
+    // Colorbar legend
+    if (m_showColorbar) {
+        int barW = 10, barH = std::min(120, height() - 60);
+        int bx = width() - barW - 6, by = (height() - barH) / 2;
+        for (int i = 0; i < barH; ++i) {
+            float t = 1.0f - (float)i / std::max(1, barH - 1);
+            int r, g, b; applyColormap(m_colormap, t, r, g, b);
+            painter.setPen(QColor(r, g, b));
+            painter.drawLine(bx, by + i, bx + barW, by + i);
+        }
+        painter.setPen(QColor(60,60,60));
+        painter.drawRect(bx, by, barW, barH);
+        QFont cf = font(); cf.setPointSize(7); painter.setFont(cf);
+        painter.setPen(QColor(210,210,210));
+        painter.drawText(bx - 30, by + 8,    QString::number(vmax, 'f', 0));
+        painter.drawText(bx - 30, by + barH, QString::number(vmin, 'f', 0));
+    }
+
+    // Projection tag
+    if (m_projMode) {
+        painter.setPen(QColor(255,200,90));
+        QFont pf = font(); pf.setPointSize(8); pf.setBold(true); painter.setFont(pf);
+        QString tag = (m_projMode == 1) ? "MIP" : "MinIP";
+        if (m_slab) tag += QString(" ±%1").arg(m_slab);
+        painter.drawText(ir.adjusted(4,18,0,0), Qt::AlignTop|Qt::AlignLeft, tag);
+    }
 
     // Panel name + slice index
     static const char* NAMES[] = {"Sagittal","Coronal","Axial"};

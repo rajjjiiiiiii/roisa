@@ -71,6 +71,10 @@ public:
     void setOverlayAlpha(float a);
     void setAllLabelsVisible(bool v);
     void setShowInfoOverlay(bool on);
+    void setProjectionMode(int mode);
+    void setSlab(int slab);
+    void setShowColorbar(bool on);
+    void setVtkClip(bool enabled, int axis, double frac);
     void resetAllZoom();
 
     // ── Fusion passthroughs ────────────────────────────────────────────────────
