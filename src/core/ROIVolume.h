@@ -116,6 +116,22 @@ public:
     /// The mask is preserved. Returns false on error.
     bool loadRegisteredImage(const std::string& movingPath);
 
+    /// Register THIS (moving) volume to `fixed` and resample its display image
+    /// into the fixed display grid so it aligns for fusion overlay.
+    /// mode: 0=Rigid (Euler3D)  1=Affine  2=Deformable (BSpline).
+    /// The pre-registration image is kept so resetRegistration() can restore it.
+    bool registerTo(const ROIVolume* fixed, int mode, int iterations = 100);
+
+    /// Apply a manual rigid transform (mm translation + degree rotation) to the
+    /// original moving image and resample into `fixed`'s display grid.
+    bool applyManualTransform(const ROIVolume* fixed,
+                              double tx, double ty, double tz,
+                              double rxDeg, double ryDeg, double rzDeg);
+
+    /// Restore the original (pre-registration) display image.
+    bool resetRegistration();
+    bool isRegistered() const { return static_cast<bool>(m_displayBackup); }
+
     // ── Voxel access (display space, x/y/z indexing) ──────────────────────────
     float   getIntensity(int x, int y, int z) const;
     int16_t getMaskLabel (int x, int y, int z) const;
@@ -171,6 +187,7 @@ public:
 private:
     FloatPtr m_origImg;      // original image (full resolution, for save)
     FloatPtr m_displayImg;   // float32, isotropically resampled to TARGET_SIZE
+    FloatPtr m_displayBackup;// pre-registration display image (for Reset)
     Int16Ptr m_mask;         // int16, same grid as m_displayImg
 
     float       m_vmin{0.f};

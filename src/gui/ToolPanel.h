@@ -7,6 +7,8 @@
 
 #include <QWidget>
 #include <QString>
+#include <QList>
+#include <QPair>
 
 class QComboBox;    class QSpinBox;      class QDoubleSpinBox;
 class QCheckBox;    class QSlider;       class QPushButton;
@@ -41,6 +43,10 @@ public:
     void setFusionTarget(const QString& name, int colormap, float alpha,
                          float wmin, float wmax, bool isBase, bool baseVisible);
 
+    // ── Registration: populate moving-image dropdown / set status ───────────────
+    void setMovingImages(const QList<QPair<QString,int>>& items);
+    void setRegStatus(const QString& msg);
+
 signals:
     void refreshRequested();
     // Fusion controls target the layer selected in the Images panel
@@ -48,6 +54,11 @@ signals:
     void fusionAlphaChanged(float alpha);
     void fusionWindowChanged(float lo, float hi);
     void baseVisibleToggled(bool on);
+    // Registration operator (movingIdx indexes the loaded inputs, 1-based)
+    void registerRequested(int movingIdx, const QString& mode, int iterations);
+    void manualTransformRequested(int movingIdx, double tx, double ty, double tz,
+                                  double rx, double ry, double rz);
+    void resetRegistrationRequested(int movingIdx);
 
 public slots:
     void onPositionChanged(int x, int y, int z);
@@ -204,6 +215,17 @@ private:
     // ── DICOM Tags tab ─────────────────────────────────────────────────────────
     DicomTagWidget*  m_tagWidget{nullptr};
 
+    // ── Registration operator ───────────────────────────────────────────────────
+    QComboBox*      m_regMovingCombo{nullptr};
+    QComboBox*      m_regModeCombo{nullptr};
+    QSpinBox*       m_regItersSpin{nullptr};
+    QPushButton*    m_regRunBtn{nullptr};
+    QLabel*         m_regStatusLabel{nullptr};
+    QDoubleSpinBox* m_manTx{nullptr}; QDoubleSpinBox* m_manTy{nullptr}; QDoubleSpinBox* m_manTz{nullptr};
+    QDoubleSpinBox* m_manRx{nullptr}; QDoubleSpinBox* m_manRy{nullptr}; QDoubleSpinBox* m_manRz{nullptr};
+    QPushButton*    m_manApplyBtn{nullptr};
+    QPushButton*    m_manResetBtn{nullptr};
+
     // ── Measure operator ───────────────────────────────────────────────────────
     QComboBox*   m_measureTypeCombo{nullptr};
     QPushButton* m_clearMeasBtn{nullptr};
@@ -228,10 +250,13 @@ private:
     QGroupBox* buildCineGroup();
     QGroupBox* buildMeasureGroup();
     QGroupBox* buildExportGroup();
+    QGroupBox* buildAutoRegGroup();
+    QGroupBox* buildManualRegGroup();
 
     // ── Operator page builders ─────────────────────────────────────────────────
     QWidget* buildNavViewerOperator();
     QWidget* buildROIOperator();
+    QWidget* buildRegistrationOperator();
     QWidget* buildMeasureOperator();
 
     void setStatus(const QString& msg);

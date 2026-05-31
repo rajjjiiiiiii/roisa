@@ -7,6 +7,7 @@
 #include "../core/ROIAlgorithms.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -121,6 +122,51 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_toolPanel, &ToolPanel::baseVisibleToggled, this, [this](bool on){
         if (!m_volVisible.empty()) m_volVisible[0] = on;
         m_imageList->setEnabled(0, on);
+        rebuildFusion();
+    });
+
+    // ── Registration operator ───────────────────────────────────────────────
+    connect(m_toolPanel, &ToolPanel::registerRequested, this,
+            [this](int movingIdx, const QString& mode, int iters){
+        ROIVolume* ref = refVol();
+        if (!ref || !ref->isLoaded()) { m_toolPanel->setRegStatus("Load a reference first."); return; }
+        if (movingIdx < 1 || movingIdx >= (int)m_volumes.size()) {
+            m_toolPanel->setRegStatus("Invalid moving image."); return; }
+        const int m = (mode == "affine") ? 1 : (mode == "deformable") ? 2 : 0;
+        m_toolPanel->setRegStatus(QString("Registering IN%1 (%2)… please wait")
+                                  .arg(movingIdx).arg(mode));
+        statusBar()->showMessage(QString("Registering IN%1 to REF (%2)…").arg(movingIdx).arg(mode));
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        QApplication::processEvents();
+        const bool ok = m_volumes[movingIdx]->registerTo(ref, m, iters);
+        QApplication::restoreOverrideCursor();
+        m_toolPanel->setRegStatus(ok
+            ? QString("IN%1 registered to REF (%2). Now aligned in fusion.").arg(movingIdx).arg(mode)
+            : QString("Registration of IN%1 failed — see console.").arg(movingIdx));
+        rebuildFusion();
+    });
+
+    connect(m_toolPanel, &ToolPanel::manualTransformRequested, this,
+            [this](int movingIdx, double tx, double ty, double tz,
+                   double rx, double ry, double rz){
+        ROIVolume* ref = refVol();
+        if (!ref || !ref->isLoaded()) return;
+        if (movingIdx < 1 || movingIdx >= (int)m_volumes.size()) return;
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        const bool ok = m_volumes[movingIdx]->applyManualTransform(ref, tx,ty,tz, rx,ry,rz);
+        QApplication::restoreOverrideCursor();
+        m_toolPanel->setRegStatus(ok
+            ? QString("Manual transform applied to IN%1.").arg(movingIdx)
+            : "Manual transform failed.");
+        rebuildFusion();
+    });
+
+    connect(m_toolPanel, &ToolPanel::resetRegistrationRequested, this,
+            [this](int movingIdx){
+        if (movingIdx < 1 || movingIdx >= (int)m_volumes.size()) return;
+        m_toolPanel->setRegStatus(m_volumes[movingIdx]->resetRegistration()
+            ? QString("IN%1 restored to original (unregistered).").arg(movingIdx)
+            : QString("IN%1 has no registration to reset.").arg(movingIdx));
         rebuildFusion();
     });
 
@@ -546,6 +592,15 @@ void MainWindow::syncImageList()
             m_imageList->setRemoveEnabled(0, m_volumes.size() <= 1);
     }
     m_imageList->setActive(m_activeVol);
+
+    // Keep the Registration operator's moving-image dropdown in sync
+    QList<QPair<QString,int>> moving;
+    for (int i = 1; i < (int)m_volumes.size(); ++i) {
+        QString nm = QFileInfo(m_volNames[i]).fileName();
+        moving.append({ QString("IN%1%2").arg(i)
+                            .arg(nm.isEmpty() ? "" : "  (" + nm + ")"), i });
+    }
+    m_toolPanel->setMovingImages(moving);
 }
 
 // ── Brush footprint ────────────────────────────────────────────────────────────

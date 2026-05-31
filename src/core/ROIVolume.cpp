@@ -28,9 +28,15 @@
 // ITK registration
 #include <itkCenteredTransformInitializer.h>
 #include <itkEuler3DTransform.h>
+#include <itkAffineTransform.h>
+#include <itkBSplineTransform.h>
+#include <itkBSplineTransformInitializer.h>
 #include <itkImageRegistrationMethodv4.h>
 #include <itkMeanSquaresImageToImageMetricv4.h>
+#include <itkMattesMutualInformationImageToImageMetricv4.h>
 #include <itkRegularStepGradientDescentOptimizerv4.h>
+#include <itkRegistrationParameterScalesFromPhysicalShift.h>
+#include <itkCompositeTransform.h>
 
 namespace fs = std::filesystem;
 
@@ -898,4 +904,209 @@ bool ROIVolume::loadRegisteredImage(const std::string& movingPath)
         std::cerr << "loadRegisteredImage error: " << e.what() << "\n";
         return false;
     }
+}
+
+// ── Registration to a reference volume ──────────────────────────────────────────
+
+namespace {
+
+using RegImage = ROIVolume::FloatImage3;
+using RegPtr   = ROIVolume::FloatPtr;
+
+// Resample `moving` by `tx` onto `fixed`'s grid (linear interpolation).
+template<typename TxPtr>
+RegPtr resampleByTransform(RegPtr moving, RegPtr fixed, TxPtr tx)
+{
+    using ResampleF = itk::ResampleImageFilter<RegImage, RegImage>;
+    auto resample = ResampleF::New();
+    resample->SetInput(moving);
+    resample->SetTransform(tx);
+    resample->SetReferenceImage(fixed);
+    resample->UseReferenceImageOn();
+    resample->SetInterpolator(
+        itk::LinearInterpolateImageFunction<RegImage, double>::New());
+    resample->SetDefaultPixelValue(0.f);
+    resample->Update();
+    return resample->GetOutput();
+}
+
+// Multi-resolution linear (rigid/affine) registration; returns optimized transform.
+template<typename TTx>
+typename TTx::Pointer registerLinear(RegPtr fixed, RegPtr moving, int iters)
+{
+    using MetricT = itk::MattesMutualInformationImageToImageMetricv4<RegImage, RegImage>;
+    using OptT    = itk::RegularStepGradientDescentOptimizerv4<double>;
+    using RegT    = itk::ImageRegistrationMethodv4<RegImage, RegImage, TTx>;
+    using InitT   = itk::CenteredTransformInitializer<TTx, RegImage, RegImage>;
+    using ScalesT = itk::RegistrationParameterScalesFromPhysicalShift<MetricT>;
+
+    auto metric = MetricT::New();
+    metric->SetNumberOfHistogramBins(50);
+
+    auto opt = OptT::New();
+    opt->SetLearningRate(1.0);
+    opt->SetMinimumStepLength(1e-4);
+    opt->SetNumberOfIterations(iters);
+    opt->SetRelaxationFactor(0.6);
+
+    auto tx   = TTx::New();
+    auto init = InitT::New();
+    init->SetTransform(tx);
+    init->SetFixedImage(fixed);
+    init->SetMovingImage(moving);
+    init->MomentsOn();
+    init->InitializeTransform();
+
+    auto reg = RegT::New();
+    reg->SetMetric(metric);
+    reg->SetOptimizer(opt);
+    reg->SetInitialTransform(tx);
+    reg->SetFixedImage(fixed);
+    reg->SetMovingImage(moving);
+
+    auto scales = ScalesT::New();
+    scales->SetMetric(metric);
+    opt->SetScalesEstimator(scales);
+
+    typename RegT::ShrinkFactorsArrayType   shrink(3);
+    shrink[0] = 4; shrink[1] = 2; shrink[2] = 1;
+    typename RegT::SmoothingSigmasArrayType sigma(3);
+    sigma[0] = 2.0; sigma[1] = 1.0; sigma[2] = 0.0;
+    reg->SetNumberOfLevels(3);
+    reg->SetShrinkFactorsPerLevel(shrink);
+    reg->SetSmoothingSigmasPerLevel(sigma);
+    reg->Update();
+
+    return tx;   // v4 optimizes the transform passed to SetInitialTransform
+}
+
+} // namespace
+
+bool ROIVolume::registerTo(const ROIVolume* fixed, int mode, int iterations)
+{
+    if (!m_displayImg || !fixed || !fixed->m_displayImg) return false;
+    try {
+        if (!m_displayBackup) m_displayBackup = m_displayImg;  // keep for Reset
+        RegPtr movingImg = m_displayBackup;
+        RegPtr fixedImg  = fixed->m_displayImg;
+        RegPtr result;
+
+        if (mode == 1) {                       // Affine
+            auto tx = registerLinear<itk::AffineTransform<double,3>>(
+                          fixedImg, movingImg, iterations);
+            result = resampleByTransform(movingImg, fixedImg, tx);
+        }
+        else if (mode == 2) {                  // Deformable (rigid pre-align + BSpline)
+            auto rigid = registerLinear<itk::Euler3DTransform<double>>(
+                             fixedImg, movingImg, iterations);
+            RegPtr preAligned = resampleByTransform(movingImg, fixedImg, rigid);
+
+            using BTx   = itk::BSplineTransform<double,3,3>;
+            using BInit = itk::BSplineTransformInitializer<BTx, RegImage>;
+            using MetricT = itk::MattesMutualInformationImageToImageMetricv4<RegImage, RegImage>;
+            using OptT    = itk::RegularStepGradientDescentOptimizerv4<double>;
+            using RegT    = itk::ImageRegistrationMethodv4<RegImage, RegImage, BTx>;
+            using ScalesT = itk::RegistrationParameterScalesFromPhysicalShift<MetricT>;
+
+            auto btx   = BTx::New();
+            auto binit = BInit::New();
+            binit->SetTransform(btx);
+            binit->SetImage(fixedImg);
+            BTx::MeshSizeType mesh; mesh.Fill(8);
+            binit->SetTransformDomainMeshSize(mesh);
+            binit->InitializeTransform();
+
+            auto metric = MetricT::New(); metric->SetNumberOfHistogramBins(50);
+            auto opt = OptT::New();
+            opt->SetLearningRate(1.0);
+            opt->SetMinimumStepLength(1e-4);
+            opt->SetNumberOfIterations(std::max(20, iterations / 2));
+            opt->SetRelaxationFactor(0.6);
+
+            auto reg = RegT::New();
+            reg->SetMetric(metric);
+            reg->SetOptimizer(opt);
+            reg->SetInitialTransform(btx);
+            reg->SetFixedImage(fixedImg);
+            reg->SetMovingImage(preAligned);
+
+            auto scales = ScalesT::New();
+            scales->SetMetric(metric);
+            opt->SetScalesEstimator(scales);
+
+            typename RegT::ShrinkFactorsArrayType   shrink(3);
+            shrink[0] = 4; shrink[1] = 2; shrink[2] = 1;
+            typename RegT::SmoothingSigmasArrayType sigma(3);
+            sigma[0] = 2.0; sigma[1] = 1.0; sigma[2] = 0.0;
+            reg->SetNumberOfLevels(3);
+            reg->SetShrinkFactorsPerLevel(shrink);
+            reg->SetSmoothingSigmasPerLevel(sigma);
+            reg->Update();
+
+            result = resampleByTransform(preAligned, fixedImg, btx);
+        }
+        else {                                 // Rigid (Euler3D)
+            auto tx = registerLinear<itk::Euler3DTransform<double>>(
+                          fixedImg, movingImg, iterations);
+            result = resampleByTransform(movingImg, fixedImg, tx);
+        }
+
+        m_displayImg = result;
+        m_mask = createMask(m_displayImg);   // moving masks are unused in fusion
+        m_history.clear();
+        notifyChange();
+        return true;
+    }
+    catch (const std::exception& e) {
+        std::cerr << "registerTo error: " << e.what() << "\n";
+        return false;
+    }
+}
+
+bool ROIVolume::applyManualTransform(const ROIVolume* fixed,
+                                      double tx, double ty, double tz,
+                                      double rxDeg, double ryDeg, double rzDeg)
+{
+    if (!m_displayImg || !fixed || !fixed->m_displayImg) return false;
+    try {
+        if (!m_displayBackup) m_displayBackup = m_displayImg;
+        RegPtr movingImg = m_displayBackup;
+        RegPtr fixedImg  = fixed->m_displayImg;
+
+        using Euler = itk::Euler3DTransform<double>;
+        auto e = Euler::New();
+
+        auto size = movingImg->GetLargestPossibleRegion().GetSize();
+        itk::ContinuousIndex<double,3> cidx;
+        cidx[0] = (size[0]-1)/2.0; cidx[1] = (size[1]-1)/2.0; cidx[2] = (size[2]-1)/2.0;
+        Euler::InputPointType center;
+        movingImg->TransformContinuousIndexToPhysicalPoint(cidx, center);
+        e->SetCenter(center);
+
+        const double d2r = std::acos(-1.0) / 180.0;
+        e->SetRotation(rxDeg*d2r, ryDeg*d2r, rzDeg*d2r);
+        Euler::OutputVectorType t; t[0]=tx; t[1]=ty; t[2]=tz;
+        e->SetTranslation(t);
+
+        m_displayImg = resampleByTransform(movingImg, fixedImg, e);
+        m_mask = createMask(m_displayImg);
+        m_history.clear();
+        notifyChange();
+        return true;
+    }
+    catch (const std::exception& ex) {
+        std::cerr << "applyManualTransform error: " << ex.what() << "\n";
+        return false;
+    }
+}
+
+bool ROIVolume::resetRegistration()
+{
+    if (!m_displayBackup) return false;
+    m_displayImg    = m_displayBackup;
+    m_displayBackup = nullptr;
+    m_mask = createMask(m_displayImg);
+    m_history.clear();
+    notifyChange();
+    return true;
 }

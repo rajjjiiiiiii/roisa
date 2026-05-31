@@ -75,7 +75,7 @@ ToolPanel::ToolPanel(QWidget* parent) : QWidget(parent)
 
     // ── Operator selector drop-down ───────────────────────────────────────────
     m_operatorCombo = new QComboBox(this);
-    m_operatorCombo->addItems({"Navigation Viewer", "ROI", "Measure"});
+    m_operatorCombo->addItems({"Navigation Viewer", "ROI", "Registration", "Measure"});
     m_operatorCombo->setStyleSheet(
         "QComboBox{"
         "  background:#1c2a38; color:#9fcfe8; font-weight:bold; font-size:12px;"
@@ -97,7 +97,8 @@ ToolPanel::ToolPanel(QWidget* parent) : QWidget(parent)
     m_operatorStack = new QStackedWidget(this);
     m_operatorStack->addWidget(buildNavViewerOperator());   // 0
     m_operatorStack->addWidget(buildROIOperator());         // 1
-    m_operatorStack->addWidget(buildMeasureOperator());     // 2
+    m_operatorStack->addWidget(buildRegistrationOperator());// 2
+    m_operatorStack->addWidget(buildMeasureOperator());     // 3
     ml->addWidget(m_operatorStack, 1);
 
     connect(m_operatorCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -211,6 +212,122 @@ QWidget* ToolPanel::buildMeasureOperator()
     l->setContentsMargins(0,0,0,0); l->setSpacing(0);
     l->addWidget(makeTabPage({buildMeasureGroup()}));
     return w;
+}
+
+QWidget* ToolPanel::buildRegistrationOperator()
+{
+    auto* w = new QWidget;
+    auto* l = new QVBoxLayout(w);
+    l->setContentsMargins(0,0,0,0); l->setSpacing(0);
+    l->addWidget(makeTabPage({buildAutoRegGroup(), buildManualRegGroup()}));
+    return w;
+}
+
+// ── Registration groups ─────────────────────────────────────────────────────────
+
+QGroupBox* ToolPanel::buildAutoRegGroup()
+{
+    auto* gb = new QGroupBox("Register to Reference"); auto* l = new QVBoxLayout(gb);
+    l->addWidget(new QLabel("Fixed: REF (reference image)"));
+
+    auto* mrow = new QHBoxLayout; mrow->addWidget(new QLabel("Moving"));
+    m_regMovingCombo = new QComboBox;
+    m_regMovingCombo->setToolTip("Input image to align onto the reference");
+    mrow->addWidget(m_regMovingCombo, 1); l->addLayout(mrow);
+
+    auto* trow = new QHBoxLayout; trow->addWidget(new QLabel("Transform"));
+    m_regModeCombo = new QComboBox;
+    m_regModeCombo->addItems({"Rigid", "Affine", "Deformable"});
+    trow->addWidget(m_regModeCombo, 1); l->addLayout(trow);
+
+    auto* irow = new QHBoxLayout; irow->addWidget(new QLabel("Iterations"));
+    m_regItersSpin = intSpin(10, 1000, 100); irow->addWidget(m_regItersSpin);
+    l->addLayout(irow);
+
+    m_regRunBtn = new QPushButton("Register");
+    m_regRunBtn->setStyleSheet(
+        "QPushButton{background:#1c3a55;color:#cfe;font-weight:bold;padding:5px;}"
+        "QPushButton:hover{background:#24507a;}");
+    l->addWidget(m_regRunBtn);
+
+    m_regStatusLabel = new QLabel("—");
+    m_regStatusLabel->setStyleSheet("color:#9c9;font-size:10px;");
+    m_regStatusLabel->setWordWrap(true);
+    l->addWidget(m_regStatusLabel);
+
+    connect(m_regRunBtn, &QPushButton::clicked, this, [this]{
+        if (!m_regMovingCombo || m_regMovingCombo->count() == 0) {
+            setRegStatus("No input image to register. Add one first.");
+            return;
+        }
+        const int movingIdx = m_regMovingCombo->currentData().toInt();
+        static const char* MODES[] = {"rigid", "affine", "deformable"};
+        const QString mode = MODES[m_regModeCombo->currentIndex()];
+        emit registerRequested(movingIdx, mode, m_regItersSpin->value());
+    });
+    return gb;
+}
+
+QGroupBox* ToolPanel::buildManualRegGroup()
+{
+    auto* gb = new QGroupBox("Manual Adjustment"); auto* l = new QVBoxLayout(gb);
+    l->addWidget(new QLabel("Nudge the selected moving image (mm / degrees):"));
+
+    m_manTx = dbl(-200,200,0,1,1); m_manTy = dbl(-200,200,0,1,1); m_manTz = dbl(-200,200,0,1,1);
+    m_manRx = dbl(-180,180,0,1,1); m_manRy = dbl(-180,180,0,1,1); m_manRz = dbl(-180,180,0,1,1);
+    struct { const char* lbl; QDoubleSpinBox* a; QDoubleSpinBox* b; } rows[] = {
+        {"Translate X / Rotate X", m_manTx, m_manRx},
+        {"Translate Y / Rotate Y", m_manTy, m_manRy},
+        {"Translate Z / Rotate Z", m_manTz, m_manRz},
+    };
+    for (auto& r : rows) {
+        l->addWidget(new QLabel(r.lbl));
+        auto* row = new QHBoxLayout; row->addWidget(r.a); row->addWidget(r.b);
+        l->addLayout(row);
+    }
+
+    auto* brow = new QHBoxLayout;
+    m_manApplyBtn = new QPushButton("Apply");
+    m_manResetBtn = new QPushButton("Reset");
+    brow->addWidget(m_manApplyBtn); brow->addWidget(m_manResetBtn);
+    l->addLayout(brow);
+
+    connect(m_manApplyBtn, &QPushButton::clicked, this, [this]{
+        if (!m_regMovingCombo || m_regMovingCombo->count() == 0) {
+            setRegStatus("Select a moving input first.");
+            return;
+        }
+        const int movingIdx = m_regMovingCombo->currentData().toInt();
+        emit manualTransformRequested(movingIdx,
+            m_manTx->value(), m_manTy->value(), m_manTz->value(),
+            m_manRx->value(), m_manRy->value(), m_manRz->value());
+    });
+    connect(m_manResetBtn, &QPushButton::clicked, this, [this]{
+        for (auto* s : {m_manTx,m_manTy,m_manTz,m_manRx,m_manRy,m_manRz}) s->setValue(0);
+        if (m_regMovingCombo && m_regMovingCombo->count() > 0)
+            emit resetRegistrationRequested(m_regMovingCombo->currentData().toInt());
+    });
+    return gb;
+}
+
+void ToolPanel::setMovingImages(const QList<QPair<QString,int>>& items)
+{
+    if (!m_regMovingCombo) return;
+    const QVariant cur = m_regMovingCombo->currentData();
+    m_regMovingCombo->blockSignals(true);
+    m_regMovingCombo->clear();
+    for (const auto& it : items)
+        m_regMovingCombo->addItem(it.first, it.second);
+    if (cur.isValid()) {
+        const int i = m_regMovingCombo->findData(cur);
+        if (i >= 0) m_regMovingCombo->setCurrentIndex(i);
+    }
+    m_regMovingCombo->blockSignals(false);
+}
+
+void ToolPanel::setRegStatus(const QString& msg)
+{
+    if (m_regStatusLabel) m_regStatusLabel->setText(msg);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -933,7 +1050,8 @@ QString ToolPanel::toolMode() const
     if (m_operatorCombo) {
         const int op = m_operatorCombo->currentIndex();
         if (op == 0) return "";          // Navigation Viewer — no painting
-        if (op == 2) return "measure";   // Measure operator
+        if (op == 2) return "";          // Registration — no painting
+        if (op == 3) return "measure";   // Measure operator
     }
     // ROI operator (index 1) — derive from tool combo
     return m_toolCombo ? m_toolCombo->currentText().toLower() : "paint";
@@ -968,12 +1086,12 @@ void ToolPanel::onOperatorChanged(int idx)
     m_operatorStack->setCurrentIndex(idx);
     if (!m_viewer) return;
 
-    if (idx == 2) {
+    if (idx == 3) {
         // Measure operator — activate measure tool
         int type = m_measureTypeCombo ? m_measureTypeCombo->currentIndex() + 1 : 1;
         m_viewer->setMeasureMode(type);
     } else {
-        // Navigation Viewer or ROI — disable measure mode
+        // Navigation Viewer / ROI / Registration — disable measure mode
         m_viewer->setMeasureMode(0);
         if (idx == 1 && m_toolCombo)
             onToolModeChanged(m_toolCombo->currentIndex());
@@ -990,7 +1108,7 @@ void ToolPanel::onToolModeChanged(int /*idx*/)
 void ToolPanel::onMeasureTypeChanged(int idx)
 {
     // Only apply when Measure operator is active
-    if (m_operatorCombo && m_operatorCombo->currentIndex() == 2 && m_viewer)
+    if (m_operatorCombo && m_operatorCombo->currentIndex() == 3 && m_viewer)
         m_viewer->setMeasureMode(idx + 1);   // 0=None, 1=Ruler, 2=Angle, 3=Circle
 }
 
