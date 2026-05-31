@@ -467,50 +467,17 @@ class ROIVolume:
 
         mode: 'rigid' (Euler3D) | 'affine' | 'deformable' (BSpline).
         The original image is preserved so reset_registration() can restore it.
+        The heavy work lives in register_images() so it can run on a thread.
         """
         if not self._loaded or fixed is None or not fixed.is_loaded():
             return False
         try:
             if self._orig_sitk is None:
                 self._orig_sitk = self._sitk_img      # backup for reset
-            moving = sitk.Cast(self._orig_sitk, sitk.sitkFloat32)
-            fix    = sitk.Cast(fixed._sitk_img, sitk.sitkFloat32)
-
-            reg = sitk.ImageRegistrationMethod()
-            reg.SetMetricAsMattesMutualInformation(50)
-            reg.SetMetricSamplingStrategy(reg.RANDOM)
-            reg.SetMetricSamplingPercentage(0.10)
-            reg.SetInterpolator(sitk.sitkLinear)
-            reg.SetOptimizerScalesFromPhysicalShift()
-            reg.SetShrinkFactorsPerLevel([4, 2, 1])
-            reg.SetSmoothingSigmasPerLevel([2., 1., 0.])
-            reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
-
-            if mode == "deformable":
-                # Pre-align rigidly, then refine with a B-spline mesh
-                rigid = sitk.CenteredTransformInitializer(
-                    fix, moving, sitk.Euler3DTransform(),
-                    sitk.CenteredTransformInitializerFilter.GEOMETRY)
-                init = sitk.BSplineTransformInitializer(fix, [8, 8, 8])
-                reg.SetMovingInitialTransform(rigid)
-                reg.SetInitialTransform(init, inPlace=True)
-                reg.SetOptimizerAsGradientDescentLineSearch(
-                    learningRate=1., numberOfIterations=max(20, iterations // 2))
-                bspline = reg.Execute(fix, moving)
-                out_tx = sitk.CompositeTransform([rigid, bspline])
-            else:
-                base = (sitk.AffineTransform(3) if mode == "affine"
-                        else sitk.Euler3DTransform())
-                init = sitk.CenteredTransformInitializer(
-                    fix, moving, base,
-                    sitk.CenteredTransformInitializerFilter.GEOMETRY)
-                reg.SetOptimizerAsGradientDescent(
-                    learningRate=1., numberOfIterations=iterations)
-                reg.SetInitialTransform(init, inPlace=False)
-                out_tx = reg.Execute(fix, moving)
-
-            resampled = sitk.Resample(moving, fix, out_tx,
-                                      sitk.sitkLinear, 0., sitk.sitkFloat32)
+            resampled = register_images(self._orig_sitk, fixed._sitk_img,
+                                        mode, iterations)
+            if resampled is None:
+                return False
             self._apply_resampled(resampled)
             self._reg_manual = [0., 0., 0., 0., 0., 0.]
             return True
@@ -576,3 +543,55 @@ class ROIVolume:
         m = sitk.GetImageFromArray(self._mask.astype(np.int16))
         m.CopyInformation(self._sitk_img)
         return m
+
+
+# ── Registration (thread-safe: reads images, returns a new image) ────────────────
+
+def register_images(moving_img: "sitk.Image", fixed_img: "sitk.Image",
+                    mode: str = "rigid", iterations: int = 100):
+    """Register `moving_img` to `fixed_img`, returning the resampled image.
+
+    Pure with respect to its inputs (no shared state mutated), so it is safe
+    to call from a background thread.  Returns None on failure.
+    """
+    try:
+        moving = sitk.Cast(moving_img, sitk.sitkFloat32)
+        fix    = sitk.Cast(fixed_img, sitk.sitkFloat32)
+
+        reg = sitk.ImageRegistrationMethod()
+        reg.SetMetricAsMattesMutualInformation(50)
+        reg.SetMetricSamplingStrategy(reg.RANDOM)
+        reg.SetMetricSamplingPercentage(0.10)
+        reg.SetInterpolator(sitk.sitkLinear)
+        reg.SetOptimizerScalesFromPhysicalShift()
+        reg.SetShrinkFactorsPerLevel([4, 2, 1])
+        reg.SetSmoothingSigmasPerLevel([2., 1., 0.])
+        reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
+
+        if mode == "deformable":
+            rigid = sitk.CenteredTransformInitializer(
+                fix, moving, sitk.Euler3DTransform(),
+                sitk.CenteredTransformInitializerFilter.GEOMETRY)
+            init = sitk.BSplineTransformInitializer(fix, [8, 8, 8])
+            reg.SetMovingInitialTransform(rigid)
+            reg.SetInitialTransform(init, inPlace=True)
+            reg.SetOptimizerAsGradientDescentLineSearch(
+                learningRate=1., numberOfIterations=max(20, iterations // 2))
+            bspline = reg.Execute(fix, moving)
+            out_tx = sitk.CompositeTransform([rigid, bspline])
+        else:
+            base = (sitk.AffineTransform(3) if mode == "affine"
+                    else sitk.Euler3DTransform())
+            init = sitk.CenteredTransformInitializer(
+                fix, moving, base,
+                sitk.CenteredTransformInitializerFilter.GEOMETRY)
+            reg.SetOptimizerAsGradientDescent(
+                learningRate=1., numberOfIterations=iterations)
+            reg.SetInitialTransform(init, inPlace=False)
+            out_tx = reg.Execute(fix, moving)
+
+        return sitk.Resample(moving, fix, out_tx,
+                             sitk.sitkLinear, 0., sitk.sitkFloat32)
+    except Exception as exc:
+        print(f"[register_images] {exc}")
+        return None

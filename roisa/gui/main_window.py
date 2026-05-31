@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QMainWindow,
@@ -24,6 +24,22 @@ from ..core.roi_volume import ROIVolume
 from .image_list_widget import ImageListWidget
 from .ortho_viewer      import OrthoViewer
 from .tool_panel        import ToolPanel
+
+
+class _BgWorker(QObject):
+    """Runs a callable on a worker thread and reports the result / error."""
+    done = pyqtSignal(object)
+    fail = pyqtSignal(str)
+
+    def __init__(self, fn) -> None:
+        super().__init__()
+        self._fn = fn
+
+    def run(self) -> None:
+        try:
+            self.done.emit(self._fn())
+        except Exception as exc:          # noqa: BLE001 — report any failure
+            self.fail.emit(str(exc))
 
 
 class MainWindow(QMainWindow):
@@ -306,9 +322,48 @@ class MainWindow(QMainWindow):
         self._image_list.set_enabled(0, on)
         self._rebuild_fusion()
 
+    # ── Background-task runner (keeps the UI responsive on large volumes) ────────
+
+    def _run_bg(self, work, on_done, busy_msg: str) -> None:
+        """Run `work()` on a thread; call `on_done(result)` on the GUI thread.
+
+        Heavy operator controls are disabled for the duration so the same
+        volume isn't mutated twice at once; the slice/3-D views stay live.
+        """
+        if getattr(self, "_bg_busy", False) or self._panel.is_seg_running():
+            self._sb.showMessage("Busy — wait for the current operation to finish.")
+            return
+        self._bg_busy = True
+        self._panel.setBusy(True)
+        self._sb.showMessage(busy_msg)
+
+        self._bg_thread = QThread(self)
+        self._bg_worker = _BgWorker(work)
+        self._bg_worker.moveToThread(self._bg_thread)
+        self._bg_thread.started.connect(self._bg_worker.run)
+
+        def finish() -> None:
+            self._bg_busy = False
+            self._panel.setBusy(False)
+            self._bg_thread.quit()
+
+        def ok(result) -> None:
+            finish()
+            on_done(result)
+
+        def err(msg: str) -> None:
+            finish()
+            self._sb.showMessage(f"Operation failed: {msg}")
+
+        self._bg_worker.done.connect(ok)
+        self._bg_worker.fail.connect(err)
+        self._bg_thread.finished.connect(self._bg_thread.deleteLater)
+        self._bg_thread.start()
+
     # ── Registration handlers ───────────────────────────────────────────────────
 
     def _on_register(self, moving_idx: int, mode: str, iterations: int) -> None:
+        from ..core.roi_volume import register_images
         ref = self._ref_vol()
         if not ref.is_loaded():
             self._panel.setRegStatus("Load a reference image first.")
@@ -317,22 +372,30 @@ class MainWindow(QMainWindow):
             self._panel.setRegStatus("Invalid moving image.")
             return
         mv = self._volumes[moving_idx]
-        self._panel.setRegStatus(f"Registering IN{moving_idx} ({mode})… please wait")
+        # Snapshot the (immutable) source images on the GUI thread; the worker
+        # only reads them and returns a new image — the volume is mutated here.
+        if mv._orig_sitk is None:
+            mv._orig_sitk = mv._sitk_img
+        moving_src, fixed_src = mv._orig_sitk, ref._sitk_img
+        self._panel.setRegStatus(f"Registering IN{moving_idx} ({mode})… working in background")
         self._sb.showMessage(f"Registering IN{moving_idx} to REF ({mode})…")
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        QApplication.processEvents()
-        try:
-            ok = mv.register_to(ref, mode=mode, iterations=iterations)
-        finally:
-            QApplication.restoreOverrideCursor()
-        if ok:
-            self._panel.setRegStatus(
-                f"IN{moving_idx} registered to REF ({mode}). Now aligned in fusion.")
-            self._sb.showMessage(f"Registration complete: IN{moving_idx} → REF ({mode})")
-        else:
-            self._panel.setRegStatus(f"Registration of IN{moving_idx} failed — see console.")
-            self._sb.showMessage("Registration failed.")
-        self._rebuild_fusion()
+
+        def work():
+            return register_images(moving_src, fixed_src, mode, iterations)
+
+        def done(result):
+            if result is not None:
+                mv._apply_resampled(result)
+                mv._reg_manual = [0., 0., 0., 0., 0., 0.]
+                self._panel.setRegStatus(
+                    f"IN{moving_idx} registered to REF ({mode}). Now aligned in fusion.")
+                self._sb.showMessage(f"Registration complete: IN{moving_idx} → REF ({mode})")
+            else:
+                self._panel.setRegStatus(f"Registration of IN{moving_idx} failed — see console.")
+                self._sb.showMessage("Registration failed.")
+            self._rebuild_fusion()
+
+        self._run_bg(work, done, f"Registering IN{moving_idx} to REF ({mode})…")
 
     def _on_manual_transform(self, moving_idx: int, tx: float, ty: float,
                              tz: float, rx: float, ry: float, rz: float) -> None:
@@ -371,28 +434,36 @@ class MainWindow(QMainWindow):
 
     def _on_suv_compute(self, activity_idx: int) -> None:
         from ..core.suv import suv_factor, roi_suv_stats
+        import numpy as np
         ref = self._ref_vol()
-        if not ref.is_loaded():
-            self._sb.showMessage("Load a reference image first.")
-            return
-        act = self._activity_array(activity_idx)
-        if act is None or ref.mask is None:
+        if not ref.is_loaded() or ref.mask is None:
             self._sb.showMessage("No activity image / ROI available.")
             return
-        factor = suv_factor(self._panel.suvParams())
-        import numpy as np
-        labels = [int(l) for l in np.unique(ref.mask) if l != 0]
-        rows = []
-        for lbl in labels:
-            st = roi_suv_stats(act, ref.mask, lbl, ref.spacing_xyz(), factor)
-            if st:
-                rows.append(st)
-        self._last_quant_rows = rows
-        self._panel.setQuantResults(rows)
-        self._sb.showMessage(
-            f"SUV computed for {len(rows)} ROI(s) on "
-            f"{'REF' if activity_idx == 0 else 'IN'+str(activity_idx)} "
-            f"(factor {factor:.4e})")
+        factor  = suv_factor(self._panel.suvParams())
+        mask    = ref.mask
+        spacing = ref.spacing_xyz()
+
+        def work():
+            act = self._activity_array(activity_idx)   # resample (heavy)
+            if act is None:
+                return []
+            labels = [int(l) for l in np.unique(mask) if l != 0]
+            rows = []
+            for lbl in labels:
+                st = roi_suv_stats(act, mask, lbl, spacing, factor)
+                if st:
+                    rows.append(st)
+            return rows
+
+        def done(rows):
+            self._last_quant_rows = rows
+            self._panel.setQuantResults(rows)
+            self._sb.showMessage(
+                f"SUV computed for {len(rows)} ROI(s) on "
+                f"{'REF' if activity_idx == 0 else 'IN'+str(activity_idx)} "
+                f"(factor {factor:.4e})")
+
+        self._run_bg(work, done, "Computing SUV…")
 
     def _on_suv_autofill(self, activity_idx: int) -> None:
         from ..core.suv import extract_suv_params
@@ -435,19 +506,27 @@ class MainWindow(QMainWindow):
         ref = self._ref_vol()
         if not ref.is_loaded() or ref.mask is None:
             return
-        # Frames = the input images (dynamic series); fall back to REF if none
-        frames = [self._volumes[i].resample_array_to(ref)
-                  for i in range(1, len(self._volumes))]
-        if not frames:
-            frames = [ref.arr]
-        factor = suv_factor(self._panel.suvParams())
-        tac = time_activity_curve(frames, ref.mask, label, factor)
-        if not tac:
-            self._sb.showMessage(f"Label {label} not present in the ROI mask.")
-            self._panel.setTac([])
-            return
-        self._panel.setTac(tac, ylabel="SUVmean")
-        self._sb.showMessage(f"TAC plotted for label {label} across {len(tac)} frame(s).")
+        factor   = suv_factor(self._panel.suvParams())
+        mask     = ref.mask
+        n_inputs = len(self._volumes)
+
+        def work():
+            frames = [self._volumes[i].resample_array_to(ref)
+                      for i in range(1, n_inputs)]
+            if not frames:
+                frames = [ref.arr]
+            return time_activity_curve(frames, mask, label, factor)
+
+        def done(tac):
+            if not tac:
+                self._sb.showMessage(f"Label {label} not present in the ROI mask.")
+                self._panel.setTac([])
+                return
+            self._panel.setTac(tac, ylabel="SUVmean")
+            self._sb.showMessage(
+                f"TAC plotted for label {label} across {len(tac)} frame(s).")
+
+        self._run_bg(work, done, "Computing time-activity curve…")
 
     # ── Menu ──────────────────────────────────────────────────────────────────
 

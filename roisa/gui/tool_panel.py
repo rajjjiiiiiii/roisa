@@ -792,6 +792,18 @@ class ToolPanel(QWidget):
         if hasattr(self, "_reg_status") and self._reg_status:
             self._reg_status.setText(msg)
 
+    def setBusy(self, busy: bool) -> None:
+        """Disable heavy-operation buttons while a background task runs."""
+        for attr in ("_reg_run", "_man_apply", "_man_reset",
+                     "_quant_compute", "_tac_btn", "_apply_seg_btn"):
+            btn = getattr(self, attr, None)
+            if btn is not None:
+                btn.setEnabled(not busy)
+
+    def is_seg_running(self) -> bool:
+        th = getattr(self, "_seg_thread", None)
+        return th is not None and th.isRunning()
+
     # ── Quantification groups ───────────────────────────────────────────────────
 
     def _build_suv_param_group(self) -> QGroupBox:
