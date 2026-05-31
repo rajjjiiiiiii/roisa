@@ -69,6 +69,8 @@ class ROIVolume:
         self._label_vis:  List[bool] = [True] * self.MAX_LABELS
         self._label_vis[0] = False
         self._loaded: bool = False
+        self._first_dicom_file: str = ""
+        self._on_change = None   # optional callable fired after mask writes
 
     # ── Loading ────────────────────────────────────────────────────────────────
 
@@ -84,8 +86,10 @@ class ROIVolume:
                 reader.MetaDataDictionaryArrayUpdateOn()
                 reader.LoadPrivateTagsOn()
                 self._sitk_img = reader.Execute()
+                self._first_dicom_file = str(fnames[0]) if fnames else ""
             else:
                 self._sitk_img = sitk.ReadImage(str(p))
+                self._first_dicom_file = ""
 
             img_f = sitk.Cast(self._sitk_img, sitk.sitkFloat32)
             self._arr = sitk.GetArrayFromImage(img_f)           # (nz,ny,nx)
@@ -108,6 +112,21 @@ class ROIVolume:
 
     def is_loaded(self) -> bool:
         return self._loaded
+
+    def first_dicom_file(self) -> str:
+        """Path of the first DICOM file from the last load (empty for NIfTI)."""
+        return self._first_dicom_file
+
+    def set_change_callback(self, cb) -> None:
+        """Register a zero-argument callable fired after mask writes."""
+        self._on_change = cb
+
+    def _notify_change(self) -> None:
+        if self._on_change is not None:
+            try:
+                self._on_change()
+            except Exception:
+                pass
 
     # ── Dimensions ────────────────────────────────────────────────────────────
 
@@ -199,6 +218,7 @@ class ROIVolume:
             inside = (np.abs(dx) <= r) & (np.abs(dy) <= r) & (np.abs(dz) <= r)
 
         self._mask[zz[inside], yy[inside], xx[inside]] = np.int16(label)
+        self._notify_change()
 
     def clear_label(self, label: int) -> None:
         if not self._loaded:
