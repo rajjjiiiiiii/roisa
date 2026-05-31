@@ -9,8 +9,6 @@
 #include <QString>
 #include <QList>
 #include <QPair>
-#include <vector>
-#include "../core/SUV.h"
 
 class QComboBox;    class QSpinBox;      class QDoubleSpinBox;
 class QCheckBox;    class QSlider;       class QPushButton;
@@ -18,7 +16,6 @@ class QLineEdit;    class QLabel;        class QStackedWidget;
 class QGroupBox;    class QTableWidget;  class QTabWidget;
 class HistogramWidget;
 class DicomTagWidget;
-class TacWidget;
 class ROIVolume;    class OrthoViewer;
 
 class ToolPanel : public QWidget
@@ -50,15 +47,6 @@ public:
     void setMovingImages(const QList<QPair<QString,int>>& items);
     void setRegStatus(const QString& msg);
 
-    // ── Quantification: SUV params / activity dropdown / results / TAC ───────────
-    void       setQuantImages(const QList<QPair<QString,int>>& items);
-    int        activityIndex() const;
-    SUVParams  suvParams() const;
-    void       setSuvParams(const SUVParams& p);
-    void       setQuantResults(const std::vector<ROISUVStats>& rows);
-    const std::vector<ROISUVStats>& quantResults() const { return m_quantRows; }
-    void       setTac(const std::vector<double>& values, const QString& ylabel = "SUVmean");
-
 signals:
     void refreshRequested();
     // Fusion controls target the layer selected in the Images panel
@@ -71,11 +59,6 @@ signals:
     void manualTransformRequested(int movingIdx, double tx, double ty, double tz,
                                   double rx, double ry, double rz);
     void resetRegistrationRequested(int movingIdx);
-    // Quantification operator (activityIdx: 0=REF, 1+=inputs)
-    void suvComputeRequested(int activityIdx);
-    void suvAutofillRequested(int activityIdx);
-    void suvExportRequested();
-    void tacComputeRequested(int label, int activityIdx);
 
 public slots:
     void onPositionChanged(int x, int y, int z);
@@ -243,24 +226,6 @@ private:
     QPushButton*    m_manApplyBtn{nullptr};
     QPushButton*    m_manResetBtn{nullptr};
 
-    // ── Quantification operator ──────────────────────────────────────────────────
-    QComboBox*      m_quantImgCombo{nullptr};
-    QComboBox*      m_suvTypeCombo{nullptr};
-    QDoubleSpinBox* m_suvWeight{nullptr};
-    QDoubleSpinBox* m_suvHeight{nullptr};
-    QComboBox*      m_suvSexCombo{nullptr};
-    QDoubleSpinBox* m_suvDose{nullptr};
-    QDoubleSpinBox* m_suvHalf{nullptr};
-    QDoubleSpinBox* m_suvDecay{nullptr};
-    QPushButton*    m_suvAutofillBtn{nullptr};
-    QTableWidget*   m_quantTable{nullptr};
-    QPushButton*    m_quantComputeBtn{nullptr};
-    QPushButton*    m_quantExportBtn{nullptr};
-    QComboBox*      m_tacLabelCombo{nullptr};
-    QPushButton*    m_tacBtn{nullptr};
-    TacWidget*      m_tacWidget{nullptr};
-    std::vector<ROISUVStats> m_quantRows;
-
     // ── Measure operator ───────────────────────────────────────────────────────
     QComboBox*   m_measureTypeCombo{nullptr};
     QPushButton* m_clearMeasBtn{nullptr};
@@ -287,16 +252,12 @@ private:
     QGroupBox* buildExportGroup();
     QGroupBox* buildAutoRegGroup();
     QGroupBox* buildManualRegGroup();
-    QGroupBox* buildSuvParamGroup();
-    QGroupBox* buildQuantTableGroup();
-    QGroupBox* buildTacGroup();
 
     // ── Operator page builders ─────────────────────────────────────────────────
     QWidget* buildNavViewerOperator();
     QWidget* buildROIOperator();
     QWidget* buildRegistrationOperator();
     QWidget* buildMeasureOperator();
-    QWidget* buildQuantOperator();
 
     void setStatus(const QString& msg);
 };

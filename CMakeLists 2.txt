@@ -108,7 +108,6 @@ set(SOURCES
     src/main.cpp
     src/core/ROIVolume.cpp
     src/core/ROIAlgorithms.cpp
-    src/core/SUV.cpp
     src/gui/MainWindow.cpp
     src/gui/OrthoViewer.cpp
     src/gui/SliceView.cpp
@@ -119,13 +118,11 @@ set(SOURCES
     src/gui/SeriesBrowser.cpp
     src/gui/DicomTagWidget.cpp
     src/gui/ImageListWidget.cpp
-    src/gui/TacWidget.cpp
 )
 
 set(HEADERS
     src/core/ROIVolume.h
     src/core/ROIAlgorithms.h
-    src/core/SUV.h
     src/gui/MainWindow.h
     src/gui/OrthoViewer.h
     src/gui/SliceView.h
@@ -136,7 +133,6 @@ set(HEADERS
     src/gui/SeriesBrowser.h
     src/gui/DicomTagWidget.h
     src/gui/ImageListWidget.h
-    src/gui/TacWidget.h
 )
 
 add_executable(roisa ${SOURCES} ${HEADERS})

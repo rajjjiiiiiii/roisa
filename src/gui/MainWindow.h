@@ -36,6 +36,12 @@ private slots:
     void onMouseReleased();
     void openRecent();
 
+    // Quantification operator
+    void onSuvCompute(int activityIdx);
+    void onSuvAutofill(int activityIdx);
+    void onSuvExport();
+    void onTacCompute(int label, int activityIdx);
+
 private:
     // ── Multi-image state ─────────────────────────────────────────────────────
     // m_volumes[0] = reference (REF) — all ROI/paint/segment operations use this.

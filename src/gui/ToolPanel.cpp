@@ -4,6 +4,7 @@
 #include "DicomTagWidget.h"
 #include "HistogramWidget.h"
 #include "OrthoViewer.h"
+#include "TacWidget.h"
 #include "../core/ROIAlgorithms.h"
 #include "../core/ROIVolume.h"
 
@@ -75,7 +76,8 @@ ToolPanel::ToolPanel(QWidget* parent) : QWidget(parent)
 
     // ── Operator selector drop-down ───────────────────────────────────────────
     m_operatorCombo = new QComboBox(this);
-    m_operatorCombo->addItems({"Navigation Viewer", "ROI", "Registration", "Measure"});
+    m_operatorCombo->addItems({"Navigation Viewer", "ROI", "Registration",
+                               "Measure", "Quantification"});
     m_operatorCombo->setStyleSheet(
         "QComboBox{"
         "  background:#1c2a38; color:#9fcfe8; font-weight:bold; font-size:12px;"
@@ -99,6 +101,7 @@ ToolPanel::ToolPanel(QWidget* parent) : QWidget(parent)
     m_operatorStack->addWidget(buildROIOperator());         // 1
     m_operatorStack->addWidget(buildRegistrationOperator());// 2
     m_operatorStack->addWidget(buildMeasureOperator());     // 3
+    m_operatorStack->addWidget(buildQuantOperator());       // 4
     ml->addWidget(m_operatorStack, 1);
 
     connect(m_operatorCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -221,6 +224,169 @@ QWidget* ToolPanel::buildRegistrationOperator()
     l->setContentsMargins(0,0,0,0); l->setSpacing(0);
     l->addWidget(makeTabPage({buildAutoRegGroup(), buildManualRegGroup()}));
     return w;
+}
+
+QWidget* ToolPanel::buildQuantOperator()
+{
+    auto* w = new QWidget;
+    auto* l = new QVBoxLayout(w);
+    l->setContentsMargins(0,0,0,0); l->setSpacing(0);
+    l->addWidget(makeTabPage({buildSuvParamGroup(),
+                              buildQuantTableGroup(),
+                              buildTacGroup()}));
+    return w;
+}
+
+// ── Quantification groups ───────────────────────────────────────────────────────
+
+QGroupBox* ToolPanel::buildSuvParamGroup()
+{
+    auto* gb = new QGroupBox("SUV Parameters"); auto* l = new QVBoxLayout(gb);
+
+    auto* arow = new QHBoxLayout; arow->addWidget(new QLabel("Activity image"));
+    m_quantImgCombo = new QComboBox;
+    m_quantImgCombo->setToolTip("PET / activity-concentration image (Bq/mL)");
+    arow->addWidget(m_quantImgCombo, 1); l->addLayout(arow);
+
+    auto* trow = new QHBoxLayout; trow->addWidget(new QLabel("SUV type"));
+    m_suvTypeCombo = new QComboBox; m_suvTypeCombo->addItems({"Body Weight", "Lean Body Mass"});
+    trow->addWidget(m_suvTypeCombo, 1); l->addLayout(trow);
+
+    auto field = [&](const char* label, QDoubleSpinBox* spin){
+        auto* row = new QHBoxLayout; auto* lab = new QLabel(label);
+        lab->setFixedWidth(118); row->addWidget(lab); row->addWidget(spin);
+        l->addLayout(row);
+    };
+    m_suvWeight = dbl(1, 500, 70, 1, 1);     field("Weight (kg)", m_suvWeight);
+    m_suvHeight = dbl(1, 260, 170, 1, 1);    field("Height (cm)", m_suvHeight);
+    m_suvSexCombo = new QComboBox; m_suvSexCombo->addItems({"Male", "Female"});
+    auto* srow = new QHBoxLayout; auto* slab = new QLabel("Sex (for LBM)");
+    slab->setFixedWidth(118); srow->addWidget(slab); srow->addWidget(m_suvSexCombo, 1);
+    l->addLayout(srow);
+    m_suvDose  = dbl(0, 100000, 370, 1, 2);  field("Dose (MBq)", m_suvDose);
+    m_suvHalf  = dbl(1, 100000, 6586.2, 1, 1); field("Half-life (s)", m_suvHalf);
+    m_suvDecay = dbl(0, 1000, 60, 1, 1);     field("Inj→scan (min)", m_suvDecay);
+
+    m_suvAutofillBtn = new QPushButton("Auto-fill from DICOM");
+    l->addWidget(m_suvAutofillBtn);
+    connect(m_suvAutofillBtn, &QPushButton::clicked, this,
+            [this]{ emit suvAutofillRequested(activityIndex()); });
+    return gb;
+}
+
+QGroupBox* ToolPanel::buildQuantTableGroup()
+{
+    auto* gb = new QGroupBox("ROI Quantification"); auto* l = new QVBoxLayout(gb);
+    m_quantTable = new QTableWidget(0, 6);
+    m_quantTable->setHorizontalHeaderLabels(
+        {"Label", "Vol (mL)", "SUVmean", "SUVmax", "SUVpeak", "TLG"});
+    m_quantTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_quantTable->verticalHeader()->setVisible(false);
+    m_quantTable->setMinimumHeight(150);
+    l->addWidget(m_quantTable);
+
+    auto* brow = new QHBoxLayout;
+    m_quantComputeBtn = new QPushButton("Compute SUV");
+    m_quantComputeBtn->setStyleSheet(
+        "QPushButton{background:#1c3a55;color:#cfe;font-weight:bold;padding:5px;}"
+        "QPushButton:hover{background:#24507a;}");
+    m_quantExportBtn = new QPushButton("Export CSV");
+    brow->addWidget(m_quantComputeBtn); brow->addWidget(m_quantExportBtn);
+    l->addLayout(brow);
+    connect(m_quantComputeBtn, &QPushButton::clicked, this,
+            [this]{ emit suvComputeRequested(activityIndex()); });
+    connect(m_quantExportBtn, &QPushButton::clicked, this,
+            [this]{ emit suvExportRequested(); });
+    return gb;
+}
+
+QGroupBox* ToolPanel::buildTacGroup()
+{
+    auto* gb = new QGroupBox("Time-Activity Curve  (across loaded frames)");
+    auto* l = new QVBoxLayout(gb);
+    auto* row = new QHBoxLayout; row->addWidget(new QLabel("Label"));
+    m_tacLabelCombo = new QComboBox;
+    for (int i = 1; i <= 10; ++i) m_tacLabelCombo->addItem(QString("Label %1").arg(i), i);
+    row->addWidget(m_tacLabelCombo, 1);
+    m_tacBtn = new QPushButton("Plot TAC");
+    row->addWidget(m_tacBtn); l->addLayout(row);
+    m_tacWidget = new TacWidget;
+    l->addWidget(m_tacWidget);
+    connect(m_tacBtn, &QPushButton::clicked, this, [this]{
+        emit tacComputeRequested(m_tacLabelCombo->currentData().toInt(), activityIndex());
+    });
+    return gb;
+}
+
+// ── Quantification helpers ──────────────────────────────────────────────────────
+
+void ToolPanel::setQuantImages(const QList<QPair<QString,int>>& items)
+{
+    if (!m_quantImgCombo) return;
+    const QVariant cur = m_quantImgCombo->currentData();
+    m_quantImgCombo->blockSignals(true);
+    m_quantImgCombo->clear();
+    for (const auto& it : items) m_quantImgCombo->addItem(it.first, it.second);
+    if (cur.isValid()) {
+        const int i = m_quantImgCombo->findData(cur);
+        if (i >= 0) m_quantImgCombo->setCurrentIndex(i);
+    }
+    m_quantImgCombo->blockSignals(false);
+}
+
+int ToolPanel::activityIndex() const
+{
+    if (m_quantImgCombo && m_quantImgCombo->count() > 0) {
+        const QVariant d = m_quantImgCombo->currentData();
+        return d.isValid() ? d.toInt() : 0;
+    }
+    return 0;
+}
+
+SUVParams ToolPanel::suvParams() const
+{
+    SUVParams p;
+    if (!m_suvTypeCombo) return p;
+    p.suvType   = m_suvTypeCombo->currentIndex();
+    p.weightKg  = m_suvWeight->value();
+    p.heightCm  = m_suvHeight->value();
+    p.sex       = m_suvSexCombo->currentIndex();
+    p.doseMbq   = m_suvDose->value();
+    p.halfLifeS = m_suvHalf->value();
+    p.decayMin  = m_suvDecay->value();
+    return p;
+}
+
+void ToolPanel::setSuvParams(const SUVParams& p)
+{
+    if (!m_suvTypeCombo) return;
+    m_suvTypeCombo->setCurrentIndex(p.suvType);
+    m_suvWeight->setValue(p.weightKg);
+    m_suvHeight->setValue(p.heightCm);
+    m_suvSexCombo->setCurrentIndex(p.sex);
+    m_suvDose->setValue(p.doseMbq);
+    m_suvHalf->setValue(p.halfLifeS);
+    m_suvDecay->setValue(p.decayMin);
+}
+
+void ToolPanel::setQuantResults(const std::vector<ROISUVStats>& rows)
+{
+    m_quantRows = rows;
+    m_quantTable->setRowCount(static_cast<int>(rows.size()));
+    for (int r = 0; r < (int)rows.size(); ++r) {
+        const auto& d = rows[r];
+        const QString vals[6] = {
+            QString::number(d.label), QString::number(d.volumeMl, 'f', 3),
+            QString::number(d.suvMean, 'f', 2), QString::number(d.suvMax, 'f', 2),
+            QString::number(d.suvPeak, 'f', 2), QString::number(d.tlg, 'f', 2)};
+        for (int c = 0; c < 6; ++c)
+            m_quantTable->setItem(r, c, new QTableWidgetItem(vals[c]));
+    }
+}
+
+void ToolPanel::setTac(const std::vector<double>& values, const QString& ylabel)
+{
+    if (m_tacWidget) m_tacWidget->setValues(values, ylabel);
 }
 
 // ── Registration groups ─────────────────────────────────────────────────────────
@@ -1052,6 +1218,7 @@ QString ToolPanel::toolMode() const
         if (op == 0) return "";          // Navigation Viewer — no painting
         if (op == 2) return "";          // Registration — no painting
         if (op == 3) return "measure";   // Measure operator
+        if (op == 4) return "";          // Quantification — no painting
     }
     // ROI operator (index 1) — derive from tool combo
     return m_toolCombo ? m_toolCombo->currentText().toLower() : "paint";

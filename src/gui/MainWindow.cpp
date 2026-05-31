@@ -5,6 +5,10 @@
 #include "SeriesBrowser.h"
 #include "ToolPanel.h"
 #include "../core/ROIAlgorithms.h"
+#include "../core/SUV.h"
+
+#include <fstream>
+#include <set>
 
 #include <QAction>
 #include <QApplication>
@@ -169,6 +173,12 @@ MainWindow::MainWindow(QWidget* parent)
             : QString("IN%1 has no registration to reset.").arg(movingIdx));
         rebuildFusion();
     });
+
+    // ── Quantification operator ──────────────────────────────────────────────
+    connect(m_toolPanel, &ToolPanel::suvComputeRequested,  this, &MainWindow::onSuvCompute);
+    connect(m_toolPanel, &ToolPanel::suvAutofillRequested, this, &MainWindow::onSuvAutofill);
+    connect(m_toolPanel, &ToolPanel::suvExportRequested,   this, &MainWindow::onSuvExport);
+    connect(m_toolPanel, &ToolPanel::tacComputeRequested,  this, &MainWindow::onTacCompute);
 
     connect(m_imageList, &ImageListWidget::removeRequested,
             this, &MainWindow::removeImage);
@@ -601,6 +611,13 @@ void MainWindow::syncImageList()
                             .arg(nm.isEmpty() ? "" : "  (" + nm + ")"), i });
     }
     m_toolPanel->setMovingImages(moving);
+
+    // Keep the Quantification activity-image dropdown in sync (REF + inputs)
+    QList<QPair<QString,int>> quant;
+    quant.append({ "REF", 0 });
+    for (int i = 1; i < (int)m_volumes.size(); ++i)
+        quant.append({ QString("IN%1").arg(i), i });
+    m_toolPanel->setQuantImages(quant);
 }
 
 // ── Brush footprint ────────────────────────────────────────────────────────────
@@ -683,4 +700,104 @@ void MainWindow::onMouseReleased()
     refVol()->pushUndo(std::move(idxs), std::move(olds));
     m_strokeFirst.clear();
     m_inStroke = false;
+}
+
+// ── Quantification ──────────────────────────────────────────────────────────────
+
+void MainWindow::onSuvCompute(int activityIdx)
+{
+    ROIVolume* ref = refVol();
+    if (!ref || !ref->isLoaded()) { statusBar()->showMessage("Load a reference first."); return; }
+
+    ROIVolume::FloatPtr actImg;
+    if (activityIdx <= 0 || activityIdx >= (int)m_volumes.size())
+        actImg = ref->displayImage();
+    else
+        actImg = m_volumes[activityIdx]->resampleDisplayTo(ref);
+    if (!actImg) { statusBar()->showMessage("No activity image available."); return; }
+
+    const float*   act = actImg->GetBufferPointer();
+    const int16_t* msk = ref->maskImage()->GetBufferPointer();
+    const int nx = ref->nx(), ny = ref->ny(), nz = ref->nz();
+    const double sp = ref->voxelSpacingMm();
+    const double f  = SUV::factor(m_toolPanel->suvParams());
+
+    std::set<int> labels;
+    const long n = static_cast<long>(nx) * ny * nz;
+    for (long i = 0; i < n; ++i) if (msk[i] > 0) labels.insert(msk[i]);
+
+    std::vector<ROISUVStats> rows;
+    for (int lbl : labels) {
+        ROISUVStats st;
+        if (SUV::roiStats(act, msk, nx, ny, nz, lbl, sp, sp, sp, f, st))
+            rows.push_back(st);
+    }
+    m_toolPanel->setQuantResults(rows);
+    statusBar()->showMessage(
+        QString("SUV computed for %1 ROI(s) on %2  (factor %3)")
+            .arg(rows.size())
+            .arg(activityIdx == 0 ? "REF" : QString("IN%1").arg(activityIdx))
+            .arg(f, 0, 'e', 4));
+}
+
+void MainWindow::onSuvAutofill(int activityIdx)
+{
+    if (activityIdx < 0 || activityIdx >= (int)m_volumes.size()) return;
+    std::string path = m_volumes[activityIdx]->firstDicomFile();
+    if (path.empty()) path = m_volNames[activityIdx].toStdString();
+    bool ok = false;
+    SUVParams p = SUV::extractParams(path, ok);
+    if (!ok) {
+        statusBar()->showMessage(
+            "Auto-fill failed — no DICOM metadata found. Enter values manually.");
+        return;
+    }
+    m_toolPanel->setSuvParams(p);
+    statusBar()->showMessage("SUV parameters auto-filled from DICOM.");
+}
+
+void MainWindow::onSuvExport()
+{
+    const auto& rows = m_toolPanel->quantResults();
+    if (rows.empty()) { statusBar()->showMessage("Nothing to export — Compute SUV first."); return; }
+    QString fn = QFileDialog::getSaveFileName(this, "Export SUV CSV",
+                                              "roisa_suv.csv", "CSV (*.csv)");
+    if (fn.isEmpty()) return;
+    std::ofstream f(fn.toStdString());
+    if (!f) { QMessageBox::warning(this, "Export error", "Cannot write file."); return; }
+    f << "Label,Voxels,Volume_mL,SUVmean,SUVmax,SUVpeak,TLG\n";
+    for (const auto& d : rows)
+        f << d.label << "," << d.voxels << "," << d.volumeMl << ","
+          << d.suvMean << "," << d.suvMax << "," << d.suvPeak << "," << d.tlg << "\n";
+    statusBar()->showMessage("Exported SUV table → " + QFileInfo(fn).fileName());
+}
+
+void MainWindow::onTacCompute(int label, int activityIdx)
+{
+    Q_UNUSED(activityIdx);
+    ROIVolume* ref = refVol();
+    if (!ref || !ref->isLoaded()) return;
+
+    // Frames = the input images (dynamic series), each on the REF grid.
+    std::vector<ROIVolume::FloatPtr> hold;     // keep images alive
+    std::vector<const float*>        frames;
+    for (int i = 1; i < (int)m_volumes.size(); ++i) {
+        auto img = m_volumes[i]->resampleDisplayTo(ref);
+        if (img) { hold.push_back(img); frames.push_back(img->GetBufferPointer()); }
+    }
+    if (frames.empty()) {            // fall back to REF as a single frame
+        hold.push_back(ref->displayImage());
+        frames.push_back(ref->displayImage()->GetBufferPointer());
+    }
+    const double f = SUV::factor(m_toolPanel->suvParams());
+    auto tac = SUV::tac(frames, ref->maskImage()->GetBufferPointer(),
+                        ref->nx(), ref->ny(), ref->nz(), label, f);
+    if (tac.empty()) {
+        statusBar()->showMessage(QString("Label %1 not present in the ROI mask.").arg(label));
+        m_toolPanel->setTac({});
+        return;
+    }
+    m_toolPanel->setTac(tac, "SUVmean");
+    statusBar()->showMessage(
+        QString("TAC plotted for label %1 across %2 frame(s).").arg(label).arg(tac.size()));
 }
