@@ -109,6 +109,9 @@ class MainWindow(QMainWindow):
         self._panel.suvAutofillRequested.connect(self._on_suv_autofill)
         self._panel.suvExportRequested.connect(self._on_suv_export)
         self._panel.tacComputeRequested.connect(self._on_tac_compute)
+        self._panel.percentThresholdRequested.connect(self._on_percent_threshold)
+        self._panel.roiRatioRequested.connect(self._on_roi_ratio)
+        self._panel.roiHistRequested.connect(self._on_roi_hist)
         self._last_quant_rows = []
 
         # ── Wire viewer / panel ────────────────────────────────────────────────
@@ -527,6 +530,64 @@ class MainWindow(QMainWindow):
                 f"TAC plotted for label {label} across {len(tac)} frame(s).")
 
         self._run_bg(work, done, "Computing time-activity curve…")
+
+    # ── Analysis handlers ────────────────────────────────────────────────────────
+
+    def _on_percent_threshold(self, source_label: int, pct: float,
+                              target_label: int) -> None:
+        from ..core.analysis import percent_threshold
+        ref = self._ref_vol()
+        if not ref.is_loaded() or ref.mask is None:
+            self._sb.showMessage("Load a reference image first.")
+            return
+        act = self._activity_array(self._panel.activityIndex())
+        if act is None:
+            self._sb.showMessage("No activity image available.")
+            return
+        sel = percent_threshold(act, ref.mask, source_label, pct)
+        if sel is None:
+            self._sb.showMessage(
+                "Percent threshold: source region empty or non-positive peak.")
+            return
+        ref.push_undo()
+        ref.mask[sel] = target_label
+        n = int(sel.sum())
+        self._rebuild_fusion()
+        self._panel.refreshStats()
+        self._sb.showMessage(
+            f"Percent threshold: {n} voxels ≥ {pct:.0f}% of peak → label {target_label}.")
+
+    def _on_roi_ratio(self, label_a: int, label_b: int) -> None:
+        from ..core.analysis import roi_ratio
+        ref = self._ref_vol()
+        if not ref.is_loaded() or ref.mask is None:
+            return
+        act = self._activity_array(self._panel.activityIndex())
+        res = roi_ratio(act, ref.mask, label_a, label_b)
+        if res is None:
+            self._panel.setRoiRatioResult(
+                f"Label {label_a} or {label_b} is empty.")
+            return
+        mean_a, mean_b, ratio = res
+        self._panel.setRoiRatioResult(
+            f"mean(L{label_a})={mean_a:.3g}   mean(L{label_b})={mean_b:.3g}\n"
+            f"ratio A/B = {ratio:.3f}")
+        self._sb.showMessage(f"ROI ratio L{label_a}/L{label_b} = {ratio:.3f}")
+
+    def _on_roi_hist(self, label: int) -> None:
+        from ..core.analysis import roi_histogram
+        ref = self._ref_vol()
+        if not ref.is_loaded() or ref.mask is None:
+            return
+        act = self._activity_array(self._panel.activityIndex())
+        res = roi_histogram(act, ref.mask, label, bins=64)
+        if res is None:
+            self._panel.setRoiHist([], 0., 1., f"Label {label}: empty")
+            self._sb.showMessage(f"Label {label} is empty.")
+            return
+        counts, vmin, vmax = res
+        self._panel.setRoiHist(counts, vmin, vmax, f"Label {label} histogram")
+        self._sb.showMessage(f"Histogram of label {label} ({int(counts.sum())} voxels).")
 
     # ── Menu ──────────────────────────────────────────────────────────────────
 

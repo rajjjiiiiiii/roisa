@@ -26,6 +26,7 @@ from ..core.suv import SUVParams
 from .histogram_widget import HistogramWidget
 from .dicom_tag_widget  import DicomTagWidget
 from .tac_widget        import TacWidget
+from .bars_widget       import BarsWidget
 
 
 # ── Background segmentation worker ────────────────────────────────────────────
@@ -86,6 +87,10 @@ class ToolPanel(QWidget):
     suvAutofillRequested = pyqtSignal(int)
     suvExportRequested   = pyqtSignal()
     tacComputeRequested  = pyqtSignal(int, int)              # label, activityIdx
+    # Analysis tab
+    percentThresholdRequested = pyqtSignal(int, float, int)  # sourceLabel, pct, targetLabel
+    roiRatioRequested         = pyqtSignal(int, int)         # labelA, labelB
+    roiHistRequested          = pyqtSignal(int)              # label
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -213,9 +218,14 @@ class ToolPanel(QWidget):
     def _build_quant_op(self) -> QWidget:
         w = QWidget(); l = QVBoxLayout(w)
         l.setContentsMargins(0,0,0,0); l.setSpacing(0)
-        l.addWidget(_scroll_page(self._build_suv_param_group(),
+        tabs = QTabWidget(); tabs.setDocumentMode(True)
+        tabs.addTab(_scroll_page(self._build_suv_param_group(),
                                   self._build_quant_table_group(),
-                                  self._build_tac_group()))
+                                  self._build_tac_group()), "SUV")
+        tabs.addTab(_scroll_page(self._build_pct_threshold_group(),
+                                  self._build_ratio_group(),
+                                  self._build_roi_hist_group()), "Analysis")
+        l.addWidget(tabs)
         return w
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -937,6 +947,74 @@ class ToolPanel(QWidget):
 
     def setTac(self, values, ylabel="SUVmean") -> None:
         self._tac_widget.set_values(values, ylabel)
+
+    # ── Analysis groups ─────────────────────────────────────────────────────────
+
+    def _build_pct_threshold_group(self) -> QGroupBox:
+        gb = QGroupBox("Percent Threshold  (PERCIST-style)"); l = QVBoxLayout(gb)
+        l.addWidget(QLabel("Select voxels ≥ X% of the peak on the activity image."))
+        srow = QHBoxLayout(); srow.addWidget(QLabel("Peak from"))
+        self._pct_source = QComboBox()
+        self._pct_source.addItem("Whole image", 0)
+        for i in range(1, 11): self._pct_source.addItem(f"Label {i}", i)
+        srow.addWidget(self._pct_source, 1); l.addLayout(srow)
+        prow = QHBoxLayout(); prow.addWidget(QLabel("Threshold %"))
+        self._pct_value = _dbl(1, 100, 41, 1, 1); prow.addWidget(self._pct_value)
+        l.addLayout(prow)
+        trow = QHBoxLayout(); trow.addWidget(QLabel("Write to label"))
+        self._pct_target = QComboBox()
+        for i in range(1, 11): self._pct_target.addItem(f"Label {i}", i)
+        trow.addWidget(self._pct_target, 1); l.addLayout(trow)
+        btn = QPushButton("Apply Threshold")
+        btn.setStyleSheet(
+            "QPushButton{background:#1c3a55;color:#cfe;font-weight:bold;padding:4px;}"
+            "QPushButton:hover{background:#24507a;}")
+        l.addWidget(btn)
+        btn.clicked.connect(lambda: self.percentThresholdRequested.emit(
+            self._pct_source.currentData(), self._pct_value.value(),
+            self._pct_target.currentData()))
+        return gb
+
+    def _build_ratio_group(self) -> QGroupBox:
+        gb = QGroupBox("ROI Ratio  (lesion-to-background)"); l = QVBoxLayout(gb)
+        row = QHBoxLayout()
+        self._ratio_a = QComboBox(); self._ratio_b = QComboBox()
+        for c in (self._ratio_a, self._ratio_b):
+            for i in range(1, 11): c.addItem(f"Label {i}", i)
+        self._ratio_b.setCurrentIndex(1)
+        row.addWidget(QLabel("A")); row.addWidget(self._ratio_a, 1)
+        row.addWidget(QLabel("/ B")); row.addWidget(self._ratio_b, 1)
+        l.addLayout(row)
+        btn = QPushButton("Compute Ratio"); l.addWidget(btn)
+        self._ratio_result = QLabel("—")
+        self._ratio_result.setStyleSheet("color:#aef;font-size:11px;")
+        self._ratio_result.setWordWrap(True)
+        l.addWidget(self._ratio_result)
+        btn.clicked.connect(lambda: self.roiRatioRequested.emit(
+            self._ratio_a.currentData(), self._ratio_b.currentData()))
+        return gb
+
+    def _build_roi_hist_group(self) -> QGroupBox:
+        gb = QGroupBox("ROI Histogram"); l = QVBoxLayout(gb)
+        row = QHBoxLayout(); row.addWidget(QLabel("Label"))
+        self._hist_label = QComboBox()
+        for i in range(1, 11): self._hist_label.addItem(f"Label {i}", i)
+        row.addWidget(self._hist_label, 1)
+        btn = QPushButton("Compute"); row.addWidget(btn)
+        l.addLayout(row)
+        self._roi_hist = BarsWidget()
+        l.addWidget(self._roi_hist)
+        btn.clicked.connect(lambda: self.roiHistRequested.emit(
+            self._hist_label.currentData()))
+        return gb
+
+    def setRoiRatioResult(self, text: str) -> None:
+        if hasattr(self, "_ratio_result"):
+            self._ratio_result.setText(text)
+
+    def setRoiHist(self, counts, vmin: float, vmax: float, title: str) -> None:
+        if hasattr(self, "_roi_hist"):
+            self._roi_hist.set_data(counts, vmin, vmax, title)
 
     def _build_measure_group(self) -> QGroupBox:
         gb = QGroupBox("Measurement Tool"); l = QVBoxLayout(gb)
