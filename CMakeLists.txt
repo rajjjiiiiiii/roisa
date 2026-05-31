@@ -117,6 +117,7 @@ set(SOURCES
     src/gui/VtkView.cpp
     src/gui/SeriesBrowser.cpp
     src/gui/DicomTagWidget.cpp
+    src/gui/ImageListWidget.cpp
 )
 
 set(HEADERS
@@ -131,6 +132,7 @@ set(HEADERS
     src/gui/VtkView.h
     src/gui/SeriesBrowser.h
     src/gui/DicomTagWidget.h
+    src/gui/ImageListWidget.h
 )
 
 add_executable(roisa ${SOURCES} ${HEADERS})
