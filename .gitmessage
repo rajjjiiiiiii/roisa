@@ -1,0 +1,18 @@
+# —— Subject (imperative, ≤50 chars) ——————————————————————————
+
+
+# —— Body (what / why, wrap at 72 chars) ——————————————————————
+
+
+# —— Dual-port checklist ——————————————————————————————————————
+# Before finishing, confirm the other branch is also updated:
+#
+#   On main (C++):         src/gui/  src/core/  CMakeLists.txt
+#   On python-port (Py):   roisa/gui/  roisa/core/  requirements.txt
+#
+# If this commit is C++ only, note the companion Python branch:
+#   Companion: feature/<name>-py  (pending / done / N/A)
+#
+# If this commit is Python only, note the companion C++ branch:
+#   Companion: feature/<name>  (pending / done / N/A)
+# —————————————————————————————————————————————————————————————
