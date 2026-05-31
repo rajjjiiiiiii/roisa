@@ -1,0 +1,41 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "release",
+      "displayName": "Release (macOS)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ITK_DIR": "$env{HOME}/itk/lib/cmake/ITK-5.4",
+        "Qt6_DIR": "$env{HOME}/Qt/6.7.3/macos/lib/cmake/Qt6",
+        "CMAKE_PREFIX_PATH": "$env{HOME}/Qt/6.7.3/macos"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug (macOS)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ITK_DIR": "$env{HOME}/itk/lib/cmake/ITK-5.4",
+        "Qt6_DIR": "$env{HOME}/Qt/6.7.3/macos/lib/cmake/Qt6",
+        "CMAKE_PREFIX_PATH": "$env{HOME}/Qt/6.7.3/macos"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "jobs": 0
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "jobs": 0
+    }
+  ]
+}
