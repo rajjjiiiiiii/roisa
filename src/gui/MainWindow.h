@@ -56,6 +56,8 @@ private slots:
     void onExportLabels();
     void onSettings();
     void onGenerateReport();
+    void onSaveSession();
+    void onLoadSession();
 
 private:
     // ── Multi-image state ─────────────────────────────────────────────────────

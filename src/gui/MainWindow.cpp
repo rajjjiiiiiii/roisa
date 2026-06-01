@@ -13,6 +13,9 @@
 #include <QBuffer>
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QMimeData>
@@ -329,6 +332,13 @@ void MainWindow::buildMenus()
     fileMenu->addAction(reportAct);
     fileMenu->addSeparator();
 
+    auto* saveSessAct = new QAction("Save Session…", this);
+    saveSessAct->setShortcut(QKeySequence("Ctrl+S"));
+    fileMenu->addAction(saveSessAct);
+    auto* loadSessAct = new QAction("Load Session…", this);
+    fileMenu->addAction(loadSessAct);
+    fileMenu->addSeparator();
+
     auto* prefsAct = new QAction("Preferences…", this);
     prefsAct->setShortcut(QKeySequence("Ctrl+,"));
     fileMenu->addAction(prefsAct);
@@ -342,6 +352,8 @@ void MainWindow::buildMenus()
     connect(dicomAct, &QAction::triggered, this, &MainWindow::openDicom);
     connect(exportLabelsAct, &QAction::triggered, this, &MainWindow::onExportLabels);
     connect(reportAct, &QAction::triggered, this, &MainWindow::onGenerateReport);
+    connect(saveSessAct, &QAction::triggered, this, &MainWindow::onSaveSession);
+    connect(loadSessAct, &QAction::triggered, this, &MainWindow::onLoadSession);
     connect(prefsAct, &QAction::triggered, this, &MainWindow::onSettings);
     connect(screenshotAct, &QAction::triggered, this, [this]{
         QString fn = QFileDialog::getSaveFileName(this, "Save Screenshot", "roisa_screenshot.png",
@@ -1139,4 +1151,113 @@ void MainWindow::onGenerateReport()
         if (f.open(QIODevice::WriteOnly | QIODevice::Text)) { f.write(html.toUtf8()); f.close(); }
     }
     statusBar()->showMessage("Report saved: " + QFileInfo(path).fileName());
+}
+
+// ── Session save / load ─────────────────────────────────────────────────────────
+
+void MainWindow::onSaveSession()
+{
+    ROIVolume* ref = refVol();
+    if (!ref || !ref->isLoaded()) { statusBar()->showMessage("Nothing to save."); return; }
+    QString dir = QFileDialog::getExistingDirectory(this, "Save session to folder");
+    if (dir.isEmpty()) return;
+
+    QJsonObject manifest;
+    manifest["version"] = 1;
+    manifest["active"]  = m_activeVol;
+    manifest["preset"]  = m_viewer->layoutPreset();
+
+    SUVParams p = m_toolPanel->suvParams();
+    QJsonObject suv;
+    suv["suvType"]=p.suvType; suv["weightKg"]=p.weightKg; suv["heightCm"]=p.heightCm;
+    suv["sex"]=p.sex; suv["doseMbq"]=p.doseMbq; suv["halfLifeS"]=p.halfLifeS;
+    suv["decayMin"]=p.decayMin;
+    manifest["suv"] = suv;
+
+    QJsonArray vols;
+    for (int i = 0; i < (int)m_volumes.size(); ++i) {
+        ROIVolume* v = m_volumes[i].get();
+        QJsonObject o;
+        o["path"]=m_volNames[i]; o["colormap"]=v->colormap(); o["alpha"]=v->fusionAlpha();
+        o["visible"]=(bool)m_volVisible[i]; o["wmin"]=v->vmin(); o["wmax"]=v->vmax();
+        vols.append(o);
+    }
+    manifest["volumes"] = vols;
+
+    QFile f(QDir(dir).filePath("session.json"));
+    if (f.open(QIODevice::WriteOnly)) {
+        f.write(QJsonDocument(manifest).toJson()); f.close();
+    }
+    ref->saveMaskRaw(QDir(dir).filePath("mask.nii.gz").toStdString());
+    statusBar()->showMessage("Session saved → " + dir);
+}
+
+void MainWindow::onLoadSession()
+{
+    QString dir = QFileDialog::getExistingDirectory(this, "Load session folder");
+    if (dir.isEmpty()) return;
+    QFile f(QDir(dir).filePath("session.json"));
+    if (!f.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, "Load session", "No session.json in that folder.");
+        return;
+    }
+    const QJsonObject manifest = QJsonDocument::fromJson(f.readAll()).object();
+    f.close();
+    const QJsonArray vols = manifest["volumes"].toArray();
+    if (vols.isEmpty()) return;
+
+    // Reload reference
+    auto ref = std::make_unique<ROIVolume>();
+    const QJsonObject r0 = vols[0].toObject();
+    if (!ref->load(r0["path"].toString().toStdString())) {
+        QMessageBox::warning(this, "Load session",
+                             "Reference image missing:\n" + r0["path"].toString());
+        return;
+    }
+    ref->setColormap(r0["colormap"].toInt());
+    ref->setWindow(r0["wmin"].toDouble(ref->vmin()), r0["wmax"].toDouble(ref->vmax()));
+
+    m_volumes.clear(); m_volVisible.clear(); m_volNames.clear();
+    m_volumes.push_back(std::move(ref));
+    m_volVisible.push_back(r0["visible"].toBool(true));
+    m_volNames.push_back(r0["path"].toString());
+
+    for (int i = 1; i < vols.size(); ++i) {
+        const QJsonObject o = vols[i].toObject();
+        auto v = std::make_unique<ROIVolume>();
+        if (!v->load(o["path"].toString().toStdString())) {
+            statusBar()->showMessage("Skipped missing input: " + o["path"].toString());
+            continue;
+        }
+        v->setColormap(o["colormap"].toInt(1));
+        v->setFusionAlpha(o["alpha"].toDouble(0.6));
+        v->setWindow(o["wmin"].toDouble(v->vmin()), o["wmax"].toDouble(v->vmax()));
+        m_volumes.push_back(std::move(v));
+        m_volVisible.push_back(o["visible"].toBool(true));
+        m_volNames.push_back(o["path"].toString());
+    }
+
+    // Restore mask
+    const QString mp = QDir(dir).filePath("mask.nii.gz");
+    if (QFile::exists(mp)) refVol()->loadMaskRaw(mp.toStdString());
+
+    // Restore SUV params
+    const QJsonObject sj = manifest["suv"].toObject();
+    SUVParams p;
+    p.suvType=sj["suvType"].toInt(); p.weightKg=sj["weightKg"].toDouble(70);
+    p.heightCm=sj["heightCm"].toDouble(170); p.sex=sj["sex"].toInt();
+    p.doseMbq=sj["doseMbq"].toDouble(370); p.halfLifeS=sj["halfLifeS"].toDouble(F18_HALF_LIFE_S);
+    p.decayMin=sj["decayMin"].toDouble(60);
+    m_toolPanel->setSuvParams(p);
+
+    m_activeVol = std::min(manifest["active"].toInt(), (int)m_volumes.size() - 1);
+    installRefChangeCallback();
+    m_toolPanel->setVolume(refVol());
+    m_toolPanel->setViewer(m_viewer);
+    m_viewer->setVolume(refVol());
+    m_viewer->setLayoutPreset(manifest["preset"].toInt(0));
+    syncImageList();
+    rebuildFusion();
+    pushFusionTarget();
+    statusBar()->showMessage(QString("Session loaded — %1 image(s).").arg(m_volumes.size()));
 }

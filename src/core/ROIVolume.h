@@ -56,6 +56,10 @@ public:
     /// Labels currently present in the mask (excluding 0).
     std::vector<int> presentLabels() const;
 
+    /// Save / load the mask in display space exactly (for session restore).
+    bool saveMaskRaw(const std::string& path) const;
+    bool loadMaskRaw(const std::string& path);
+
     // ── State ─────────────────────────────────────────────────────────────────
     bool isLoaded() const { return static_cast<bool>(m_displayImg); }
 

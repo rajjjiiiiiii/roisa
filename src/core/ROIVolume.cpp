@@ -561,6 +561,42 @@ void ROIVolume::replaceMask(Int16Ptr newMask)
 
 // ── Clear ─────────────────────────────────────────────────────────────────────
 
+bool ROIVolume::saveMaskRaw(const std::string& path) const
+{
+    if (!m_mask) return false;
+    try {
+        auto w = itk::ImageFileWriter<Int16Image3>::New();
+        w->SetFileName(path);
+        w->SetInput(m_mask);
+        w->Update();
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "saveMaskRaw error: " << e.what() << "\n";
+        return false;
+    }
+}
+
+bool ROIVolume::loadMaskRaw(const std::string& path)
+{
+    if (!m_displayImg) return false;
+    try {
+        auto r = itk::ImageFileReader<Int16Image3>::New();
+        r->SetFileName(path);
+        r->Update();
+        Int16Ptr m = r->GetOutput();
+        if (m->GetLargestPossibleRegion().GetSize()
+            == m_displayImg->GetLargestPossibleRegion().GetSize())
+            m_mask = m;
+        else
+            m_mask = resampleMaskToRef(m, m_displayImg);
+        notifyChange();
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "loadMaskRaw error: " << e.what() << "\n";
+        return false;
+    }
+}
+
 std::vector<int> ROIVolume::presentLabels() const
 {
     std::vector<int> out;
