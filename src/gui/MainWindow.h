@@ -52,6 +52,7 @@ private slots:
     // Segmentation/ROI tools
     void onInterpolate(int label, int axis);
     void onThresholdPreview(double lo, double hi, bool on);
+    void onKinetic(int target, int input, const QString& model, double dt, int fitFrom);
     // I/O & workflow
     void onExportLabels();
     void onSettings();

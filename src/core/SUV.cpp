@@ -259,4 +259,69 @@ bool roiHistogram(const float* activity, const int16_t* mask, int nx, int ny, in
     return true;
 }
 
+// ── Kinetic modeling ────────────────────────────────────────────────────────────
+
+static std::vector<double> cumtrapz(const std::vector<double>& y, double dt)
+{
+    std::vector<double> out(y.size(), 0.0);
+    for (size_t i = 1; i < y.size(); ++i)
+        out[i] = out[i-1] + (y[i] + y[i-1]) * 0.5 * dt;
+    return out;
+}
+
+// Least-squares line fit over finite points from index fitFrom onward.
+static bool fitTail(const std::vector<double>& x, const std::vector<double>& y,
+                    int fitFrom, double& slope, double& intercept)
+{
+    double sx = 0, sy = 0, sxx = 0, sxy = 0; int n = 0;
+    for (size_t i = std::max(0, fitFrom); i < x.size(); ++i) {
+        if (!std::isfinite(x[i]) || !std::isfinite(y[i])) continue;
+        sx += x[i]; sy += y[i]; sxx += x[i]*x[i]; sxy += x[i]*y[i]; ++n;
+    }
+    if (n < 2) return false;
+    const double den = n * sxx - sx * sx;
+    if (std::abs(den) < 1e-12) return false;
+    slope     = (n * sxy - sx * sy) / den;
+    intercept = (sy - slope * sx) / n;
+    return true;
+}
+
+static KineticResult graphical(const std::vector<double>& tissue,
+                               const std::vector<double>& input,
+                               double dtMin, int fitFrom, bool loganModel)
+{
+    KineticResult r;
+    if (tissue.size() != input.size() || tissue.size() < 3) return r;
+    const auto& Ct = tissue;
+    const auto& Cp = input;
+    auto intCp = cumtrapz(Cp, dtMin);
+    std::vector<double> x(Ct.size()), y(Ct.size());
+    if (loganModel) {
+        auto intCt = cumtrapz(Ct, dtMin);
+        for (size_t i = 0; i < Ct.size(); ++i) {
+            double d = (Ct[i] == 0.0) ? std::nan("") : Ct[i];
+            x[i] = intCp[i] / d; y[i] = intCt[i] / d;
+        }
+    } else {
+        for (size_t i = 0; i < Ct.size(); ++i) {
+            double d = (Cp[i] == 0.0) ? std::nan("") : Cp[i];
+            x[i] = intCp[i] / d; y[i] = Ct[i] / d;
+        }
+    }
+    if (!fitTail(x, y, fitFrom, r.slope, r.intercept)) return r;
+    r.ok = true;
+    r.model = loganModel ? "Logan" : "Patlak";
+    r.param = loganModel ? "DVR"   : "Ki";
+    r.y = y;
+    return r;
+}
+
+KineticResult patlak(const std::vector<double>& tissue,
+                     const std::vector<double>& input, double dtMin, int fitFrom)
+{ return graphical(tissue, input, dtMin, fitFrom, false); }
+
+KineticResult logan(const std::vector<double>& tissue,
+                    const std::vector<double>& input, double dtMin, int fitFrom)
+{ return graphical(tissue, input, dtMin, fitFrom, true); }
+
 } // namespace SUV

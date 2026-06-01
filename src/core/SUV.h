@@ -77,4 +77,21 @@ bool roiHistogram(const float* activity, const int16_t* mask, int nx, int ny, in
                   int label, int nbins,
                   std::vector<double>& counts, double& vmin, double& vmax);
 
+// ── Kinetic modeling (Patlak / Logan graphical analysis) ───────────────────────
+
+struct KineticResult {
+    bool        ok{false};
+    std::string model;    // "Patlak" | "Logan"
+    std::string param;    // "Ki"     | "DVR"
+    double      slope{0.0};
+    double      intercept{0.0};
+    std::vector<double> y;   // linearized y-values for plotting
+};
+
+/// tissue = target ROI TAC, input = blood-pool ROI TAC, dtMin = frame step.
+KineticResult patlak(const std::vector<double>& tissue,
+                     const std::vector<double>& input, double dtMin, int fitFrom);
+KineticResult logan (const std::vector<double>& tissue,
+                     const std::vector<double>& input, double dtMin, int fitFrom);
+
 } // namespace SUV

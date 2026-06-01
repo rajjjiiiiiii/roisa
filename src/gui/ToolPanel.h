@@ -74,6 +74,7 @@ public:
     void       setRoiRatioResult(const QString& text);
     void       setRoiHist(const std::vector<double>& counts, double vmin, double vmax,
                           const QString& title);
+    void       setKineticResult(const QString& text, const std::vector<double>& y);
 
 signals:
     void refreshRequested();
@@ -96,6 +97,8 @@ signals:
     void percentThresholdRequested(int sourceLabel, double pct, int targetLabel);
     void roiRatioRequested(int labelA, int labelB);
     void roiHistRequested(int label);
+    void kineticRequested(int target, int input, const QString& model,
+                          double dt, int fitFrom);
     // Segmentation/ROI tools
     void interpolateRequested(int label, int axis);
     void thresholdPreviewRequested(double lo, double hi, bool on);
@@ -307,6 +310,13 @@ private:
     QLabel*      m_ratioResult{nullptr};
     QComboBox*   m_histLabel{nullptr};
     BarsWidget*  m_roiHist{nullptr};
+    QComboBox*      m_kinTarget{nullptr};
+    QComboBox*      m_kinInput{nullptr};
+    QComboBox*      m_kinModel{nullptr};
+    QDoubleSpinBox* m_kinDt{nullptr};
+    QSpinBox*       m_kinFit{nullptr};
+    QLabel*         m_kinResult{nullptr};
+    TacWidget*      m_kinPlot{nullptr};
 
     // ── Measure operator ───────────────────────────────────────────────────────
     QComboBox*   m_measureTypeCombo{nullptr};
@@ -340,6 +350,7 @@ private:
     QGroupBox* buildPctThresholdGroup();
     QGroupBox* buildRatioGroup();
     QGroupBox* buildRoiHistGroup();
+    QGroupBox* buildKineticsGroup();
 
     // ── Operator page builders ─────────────────────────────────────────────────
     QWidget* buildNavViewerOperator();

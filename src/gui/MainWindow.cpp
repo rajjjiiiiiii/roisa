@@ -213,6 +213,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_toolPanel, &ToolPanel::roiHistRequested,     this, &MainWindow::onRoiHist);
     connect(m_toolPanel, &ToolPanel::interpolateRequested, this, &MainWindow::onInterpolate);
     connect(m_toolPanel, &ToolPanel::thresholdPreviewRequested, this, &MainWindow::onThresholdPreview);
+    connect(m_toolPanel, &ToolPanel::kineticRequested,     this, &MainWindow::onKinetic);
 
     connect(m_imageList, &ImageListWidget::removeRequested,
             this, &MainWindow::removeImage);
@@ -1027,6 +1028,49 @@ void MainWindow::onRoiHist(int label)
     }
     m_toolPanel->setRoiHist(counts, vmin, vmax, QString("Label %1 histogram").arg(label));
     statusBar()->showMessage(QString("Histogram of label %1.").arg(label));
+}
+
+void MainWindow::onKinetic(int target, int input, const QString& model,
+                           double dt, int fitFrom)
+{
+    ROIVolume* ref = refVol();
+    if (!ref || !ref->isLoaded()) return;
+    const int16_t* msk = ref->maskImage()->GetBufferPointer();
+    const int nx = ref->nx(), ny = ref->ny(), nz = ref->nz();
+
+    std::vector<ROIVolume::FloatPtr> hold;
+    std::vector<const float*> frames;
+    for (int i = 1; i < (int)m_volumes.size(); ++i) {
+        auto img = m_volumes[i]->resampleDisplayTo(ref);
+        if (img) { hold.push_back(img); frames.push_back(img->GetBufferPointer()); }
+    }
+    if (frames.size() < 3) {
+        m_toolPanel->setKineticResult(
+            "Need ≥3 input frames (load the dynamic series as inputs).", {});
+        return;
+    }
+    auto tissue = SUV::tac(frames, msk, nx, ny, nz, target, 1.0);
+    auto blood  = SUV::tac(frames, msk, nx, ny, nz, input,  1.0);
+    if (tissue.empty() || blood.empty()) {
+        m_toolPanel->setKineticResult(
+            QString("Label %1 or %2 not present in the mask.").arg(target).arg(input), {});
+        return;
+    }
+    SUV::KineticResult r = (model == "patlak")
+        ? SUV::patlak(tissue, blood, dt, fitFrom)
+        : SUV::logan (tissue, blood, dt, fitFrom);
+    if (!r.ok) {
+        m_toolPanel->setKineticResult("Fit failed (too few valid points).", {});
+        return;
+    }
+    m_toolPanel->setKineticResult(
+        QString("%1:  %2 = %3   (intercept %4, fit from frame %5)")
+            .arg(QString::fromStdString(r.model), QString::fromStdString(r.param))
+            .arg(r.slope, 0, 'g', 4).arg(r.intercept, 0, 'g', 3).arg(fitFrom),
+        r.y);
+    statusBar()->showMessage(
+        QString("%1 %2 = %3").arg(QString::fromStdString(r.model),
+                                  QString::fromStdString(r.param)).arg(r.slope, 0, 'g', 4));
 }
 
 // ── Segmentation/ROI tools ──────────────────────────────────────────────────────

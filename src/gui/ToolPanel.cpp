@@ -241,9 +241,47 @@ QWidget* ToolPanel::buildQuantOperator()
                               buildTacGroup()}), "SUV");
     tabs->addTab(makeTabPage({buildPctThresholdGroup(),
                               buildRatioGroup(),
-                              buildRoiHistGroup()}), "Analysis");
+                              buildRoiHistGroup(),
+                              buildKineticsGroup()}), "Analysis");
     l->addWidget(tabs);
     return w;
+}
+
+QGroupBox* ToolPanel::buildKineticsGroup()
+{
+    auto* gb = new QGroupBox("Kinetic Modeling  (Patlak / Logan)"); auto* l = new QVBoxLayout(gb);
+    l->addWidget(new QLabel("Graphical analysis from the loaded frames."));
+    auto* trow = new QHBoxLayout; trow->addWidget(new QLabel("Tissue"));
+    m_kinTarget = new QComboBox; m_kinInput = new QComboBox;
+    for (QComboBox* c : {m_kinTarget, m_kinInput})
+        for (int i = 1; i <= 10; ++i) c->addItem(QString("Label %1").arg(i), i);
+    m_kinInput->setCurrentIndex(1);
+    trow->addWidget(m_kinTarget, 1); trow->addWidget(new QLabel("Input"));
+    trow->addWidget(m_kinInput, 1); l->addLayout(trow);
+    auto* mrow = new QHBoxLayout; mrow->addWidget(new QLabel("Model"));
+    m_kinModel = new QComboBox; m_kinModel->addItems({"Patlak", "Logan"});
+    mrow->addWidget(m_kinModel, 1); mrow->addWidget(new QLabel("Δt(min)"));
+    m_kinDt = dbl(0.01, 120, 1.0, 0.5, 2); mrow->addWidget(m_kinDt); l->addLayout(mrow);
+    auto* frow = new QHBoxLayout; frow->addWidget(new QLabel("Fit from frame"));
+    m_kinFit = intSpin(0, 200, 0); frow->addWidget(m_kinFit);
+    auto* btn = new QPushButton("Compute"); frow->addWidget(btn); l->addLayout(frow);
+    m_kinResult = new QLabel("—");
+    m_kinResult->setStyleSheet("color:#aef;font-size:11px;"); m_kinResult->setWordWrap(true);
+    l->addWidget(m_kinResult);
+    m_kinPlot = new TacWidget; l->addWidget(m_kinPlot);
+    connect(btn, &QPushButton::clicked, this, [this]{
+        emit kineticRequested(m_kinTarget->currentData().toInt(),
+                              m_kinInput->currentData().toInt(),
+                              m_kinModel->currentText().toLower(),
+                              m_kinDt->value(), m_kinFit->value());
+    });
+    return gb;
+}
+
+void ToolPanel::setKineticResult(const QString& text, const std::vector<double>& y)
+{
+    if (m_kinResult) m_kinResult->setText(text);
+    if (m_kinPlot)   m_kinPlot->setValues(y, "y (linearized)");
 }
 
 // ── Analysis groups ─────────────────────────────────────────────────────────────
