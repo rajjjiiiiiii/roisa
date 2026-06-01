@@ -659,6 +659,15 @@ class MainWindow(QMainWindow):
         fm.addAction(report_act)
 
         fm.addSeparator()
+        save_sess = QAction("Save Session…", self)
+        save_sess.setShortcut(QKeySequence("Ctrl+S"))
+        save_sess.triggered.connect(self._on_save_session)
+        fm.addAction(save_sess)
+        load_sess = QAction("Load Session…", self)
+        load_sess.triggered.connect(self._on_load_session)
+        fm.addAction(load_sess)
+
+        fm.addSeparator()
         prefs_act = QAction("Preferences…", self)
         prefs_act.setShortcut(QKeySequence("Ctrl+,"))
         prefs_act.triggered.connect(self._on_settings)
@@ -817,6 +826,106 @@ class MainWindow(QMainWindow):
             prefs = dlg.values()
             self._panel.applyPreferences(prefs)
             self._sb.showMessage("Preferences applied.")
+
+    # ── Session save / load ─────────────────────────────────────────────────────
+
+    def _on_save_session(self) -> None:
+        import json, SimpleITK as sitk
+        ref = self._ref_vol()
+        if not ref.is_loaded():
+            self._sb.showMessage("Nothing to save.")
+            return
+        out_dir = QFileDialog.getExistingDirectory(self, "Save session to folder")
+        if not out_dir:
+            return
+        manifest = {
+            "version": 1,
+            "active":  self._active_vol,
+            "preset":  self._viewer.layoutPreset(),
+            "volumes": [],
+            "suv":     self._panel.suvParams().__dict__,
+        }
+        for i, vol in enumerate(self._volumes):
+            manifest["volumes"].append({
+                "path":     self._vol_names[i],
+                "colormap": vol.colormap(),
+                "alpha":    vol.fusion_alpha(),
+                "visible":  bool(self._vol_visible[i]),
+                "wmin":     vol.vmin(),
+                "wmax":     vol.vmax(),
+            })
+        try:
+            with open(os.path.join(out_dir, "session.json"), "w") as f:
+                json.dump(manifest, f, indent=2)
+            if ref.mask is not None:
+                m = sitk.GetImageFromArray(ref.mask.astype("int16"))
+                m.CopyInformation(ref.sitk_img)
+                sitk.WriteImage(m, os.path.join(out_dir, "mask.nii.gz"))
+            self._sb.showMessage(f"Session saved → {out_dir}")
+        except Exception as exc:
+            QMessageBox.warning(self, "Save session", str(exc))
+
+    def _on_load_session(self) -> None:
+        import json, numpy as np, SimpleITK as sitk
+        in_dir = QFileDialog.getExistingDirectory(self, "Load session folder")
+        if not in_dir:
+            return
+        mpath = os.path.join(in_dir, "session.json")
+        if not os.path.exists(mpath):
+            QMessageBox.warning(self, "Load session", "No session.json in that folder.")
+            return
+        with open(mpath) as f:
+            manifest = json.load(f)
+        vols = manifest.get("volumes", [])
+        if not vols:
+            return
+        # Reload reference
+        ref = ROIVolume()
+        if not ref.load(vols[0]["path"]):
+            QMessageBox.warning(self, "Load session",
+                                f"Reference image missing:\n{vols[0]['path']}")
+            return
+        self._volumes    = [ref]
+        self._vol_visible = [vols[0].get("visible", True)]
+        self._vol_names   = [vols[0]["path"]]
+        ref.set_colormap(vols[0].get("colormap", 0))
+        ref.set_window(vols[0].get("wmin", ref.vmin()), vols[0].get("wmax", ref.vmax()))
+        # Reload inputs
+        for spec in vols[1:]:
+            v = ROIVolume()
+            if not v.load(spec["path"]):
+                self._sb.showMessage(f"Skipped missing input: {spec['path']}")
+                continue
+            v.set_colormap(spec.get("colormap", 1))
+            v.set_fusion_alpha(spec.get("alpha", 0.6))
+            v.set_window(spec.get("wmin", v.vmin()), spec.get("wmax", v.vmax()))
+            self._volumes.append(v)
+            self._vol_visible.append(spec.get("visible", True))
+            self._vol_names.append(spec["path"])
+        # Restore mask
+        mp = os.path.join(in_dir, "mask.nii.gz")
+        if os.path.exists(mp) and ref.is_loaded():
+            try:
+                arr = sitk.GetArrayFromImage(sitk.ReadImage(mp)).astype(np.int16)
+                if arr.shape == ref.arr.shape:
+                    ref.mask = arr
+            except Exception as exc:
+                print(f"[load_session mask] {exc}")
+        # Restore UI state
+        self._active_vol = min(manifest.get("active", 0), len(self._volumes) - 1)
+        self._panel.setVolume(ref)
+        self._viewer.setVolume(ref)
+        self._install_ref_callback()
+        from ..core.suv import SUVParams
+        try:
+            self._panel.setSuvParams(SUVParams(**manifest.get("suv", {})))
+        except TypeError:
+            pass
+        self._viewer.setLayoutPreset(manifest.get("preset", 0))
+        self._sync_image_list()
+        self._rebuild_fusion()
+        self._push_fusion_target()
+        self._sb.showMessage(f"Session loaded — {len(self._volumes)} image(s).")
 
     # ── Report ──────────────────────────────────────────────────────────────────
 
