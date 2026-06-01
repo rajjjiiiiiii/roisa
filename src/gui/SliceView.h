@@ -64,6 +64,7 @@ public:
     void setProjectionMode(int mode)   { m_projMode = mode; update(); }
     void setSlab(int slab)             { m_slab = slab; update(); }
     void setShowColorbar(bool on)      { m_showColorbar = on; update(); }
+    void setPreviewBuffer(const uint8_t* buf) { m_previewBuf = buf; update(); }
     void resetZoom();
 
     // ── Measurement API ────────────────────────────────────────────────────────
@@ -129,6 +130,7 @@ private:
     int   m_projMode{0};                       // 0=slice 1=MIP 2=MinIP
     int   m_slab{0};                           // projection half-width
     bool  m_showColorbar{false};
+    const uint8_t* m_previewBuf{nullptr};      // threshold-preview volume (not owned)
     std::vector<FusionLayer> m_overlays;       // fusion overlays on REF grid
     std::array<bool,256> m_labelVis;   // label 0..255 visibility
 

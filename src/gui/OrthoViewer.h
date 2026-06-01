@@ -75,6 +75,7 @@ public:
     void setSlab(int slab);
     void setShowColorbar(bool on);
     void setVtkClip(bool enabled, int axis, double frac);
+    void setPreviewBuffer(const uint8_t* buf);
     void resetAllZoom();
 
     // ── Fusion passthroughs ────────────────────────────────────────────────────

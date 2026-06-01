@@ -196,6 +196,8 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_toolPanel, &ToolPanel::percentThresholdRequested, this, &MainWindow::onPercentThreshold);
     connect(m_toolPanel, &ToolPanel::roiRatioRequested,    this, &MainWindow::onRoiRatio);
     connect(m_toolPanel, &ToolPanel::roiHistRequested,     this, &MainWindow::onRoiHist);
+    connect(m_toolPanel, &ToolPanel::interpolateRequested, this, &MainWindow::onInterpolate);
+    connect(m_toolPanel, &ToolPanel::thresholdPreviewRequested, this, &MainWindow::onThresholdPreview);
 
     connect(m_imageList, &ImageListWidget::removeRequested,
             this, &MainWindow::removeImage);
@@ -693,8 +695,17 @@ void MainWindow::onSeedOrPaint(int x, int y, int z)
 
     int16_t* buf = refVol()->maskImage()->GetBufferPointer();
     int NX = refVol()->nx(), NY = refVol()->ny();
+
+    // Smart (edge-aware) brush: only paint voxels within tolerance of the
+    // brush-centre intensity. Erasing is never gated.
+    const bool   smart = (mode == "paint") && m_toolPanel->smartBrush();
+    const double tol   = m_toolPanel->brushTolerance();
+    const float* img   = smart ? refVol()->displayImage()->GetBufferPointer() : nullptr;
+    const float  ref   = smart ? refVol()->getIntensity(x, y, z) : 0.f;
+
     for (auto& [vx,vy,vz] : fp) {
         int lin = vx + NX*vy + NX*NY*vz;
+        if (smart && std::abs(img[lin] - ref) > tol) continue;
         if (m_strokeFirst.find(lin)==m_strokeFirst.end())
             m_strokeFirst[lin] = buf[lin];
         buf[lin] = label;
@@ -935,4 +946,37 @@ void MainWindow::onRoiHist(int label)
     }
     m_toolPanel->setRoiHist(counts, vmin, vmax, QString("Label %1 histogram").arg(label));
     statusBar()->showMessage(QString("Histogram of label %1.").arg(label));
+}
+
+// ── Segmentation/ROI tools ──────────────────────────────────────────────────────
+
+void MainWindow::onInterpolate(int label, int axis)
+{
+    ROIVolume* ref = refVol();
+    if (!ref || !ref->isLoaded()) return;
+    ref->pushUndoAll();
+    const int filled = ref->interpolateLabel(label, axis);
+    rebuildFusion();
+    m_toolPanel->refreshStats();
+    statusBar()->showMessage(filled
+        ? QString("Interpolated label %1: filled %2 slice(s).").arg(label).arg(filled)
+        : QString("Interpolate: need label %1 on ≥2 separated slices along that axis.").arg(label));
+}
+
+void MainWindow::onThresholdPreview(double lo, double hi, bool on)
+{
+    ROIVolume* ref = refVol();
+    if (!on || !ref || !ref->isLoaded()) {
+        m_previewVol.clear();
+        m_viewer->setPreviewBuffer(nullptr);
+        m_viewer->refresh();
+        return;
+    }
+    const float* img = ref->displayImage()->GetBufferPointer();
+    const long n = static_cast<long>(ref->nx()) * ref->ny() * ref->nz();
+    m_previewVol.resize(n);
+    for (long i = 0; i < n; ++i)
+        m_previewVol[i] = (img[i] >= lo && img[i] <= hi) ? 1 : 0;
+    m_viewer->setPreviewBuffer(m_previewVol.data());
+    m_viewer->refresh();
 }

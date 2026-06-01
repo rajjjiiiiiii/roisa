@@ -77,6 +77,14 @@ public:
     static void sliceFromBuffer(const float* buf, int NX, int NY, int NZ,
                                 int axis, int idx, std::vector<float>& dst);
 
+    /// uint8 variant — used for the threshold-preview overlay.
+    static void sliceFromBufferU8(const uint8_t* buf, int NX, int NY, int NZ,
+                                  int axis, int idx, std::vector<uint8_t>& dst);
+
+    /// Fill `label` on empty slices between drawn slices along `axis` (SDF blend).
+    /// Returns the number of slices filled.
+    int interpolateLabel(int label, int axis);
+
     // ── Spacing ───────────────────────────────────────────────────────────────
     double voxelSpacingMm() const;   // isotropic spacing of display volume
 

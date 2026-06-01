@@ -46,6 +46,9 @@ private slots:
     void onPercentThreshold(int sourceLabel, double pct, int targetLabel);
     void onRoiRatio(int labelA, int labelB);
     void onRoiHist(int label);
+    // Segmentation/ROI tools
+    void onInterpolate(int label, int axis);
+    void onThresholdPreview(double lo, double hi, bool on);
 
 private:
     // ── Multi-image state ─────────────────────────────────────────────────────
@@ -67,6 +70,9 @@ private:
     // Stroke-level undo (always on REF)
     std::unordered_map<int,int16_t> m_strokeFirst;
     bool m_inStroke{false};
+
+    // Threshold-preview volume (owned; pointer handed to slice views)
+    std::vector<uint8_t> m_previewVol;
 
     // Recent files
     QMenu*    m_recentMenu{nullptr};

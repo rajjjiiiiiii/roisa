@@ -340,6 +340,13 @@ void OrthoViewer::setVtkClip(bool enabled, int axis, double frac)
     m_vtkView->setClip(enabled, axis, frac);
 }
 
+void OrthoViewer::setPreviewBuffer(const uint8_t* buf)
+{
+    m_sagView->setPreviewBuffer(buf);
+    m_corView->setPreviewBuffer(buf);
+    m_axiView->setPreviewBuffer(buf);
+}
+
 void OrthoViewer::setMeasureMode(int mode)
 {
     auto m = static_cast<SliceView::MeasureMode>(mode);

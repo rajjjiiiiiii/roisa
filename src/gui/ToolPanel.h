@@ -38,6 +38,8 @@ public:
     int  brushRadius() const;
     int  brushShape()  const;   // 0=sphere  1=cylinder  2=cube
     bool twoDOnly()    const;
+    bool   smartBrush()     const;
+    double brushTolerance() const;
 
     // Called by MainWindow after mask changes
     void refreshStats();
@@ -88,6 +90,9 @@ signals:
     void percentThresholdRequested(int sourceLabel, double pct, int targetLabel);
     void roiRatioRequested(int labelA, int labelB);
     void roiHistRequested(int label);
+    // Segmentation/ROI tools
+    void interpolateRequested(int label, int axis);
+    void thresholdPreviewRequested(double lo, double hi, bool on);
 
 public slots:
     void onPositionChanged(int x, int y, int z);
@@ -135,6 +140,11 @@ private:
     QSpinBox*    m_brushRadiusSpin{nullptr};
     QComboBox*   m_brushShapeCombo{nullptr};
     QCheckBox*   m_twoDCheckbox{nullptr};
+    QCheckBox*      m_smartCheck{nullptr};
+    QDoubleSpinBox* m_smartTol{nullptr};
+    QComboBox*      m_interpAxisCombo{nullptr};
+    QPushButton*    m_interpBtn{nullptr};
+    QCheckBox*      m_threshPreviewCheck{nullptr};
 
     // ── Viewer tab — Navigation sliders ───────────────────────────────────────
     QSlider*  m_xSlider{nullptr}, *m_ySlider{nullptr}, *m_zSlider{nullptr};

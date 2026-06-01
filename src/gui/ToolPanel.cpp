@@ -606,6 +606,9 @@ QGroupBox* ToolPanel::buildToolGroup()
     m_brushShapeCombo=new QComboBox;
     m_brushShapeCombo->addItems({"Sphere","Cylinder","Cube"}); l->addWidget(m_brushShapeCombo);
     m_twoDCheckbox=new QCheckBox("2D only (current slice)"); l->addWidget(m_twoDCheckbox);
+    m_smartCheck=new QCheckBox("Smart brush (edge-aware)"); l->addWidget(m_smartCheck);
+    auto* strow=new QHBoxLayout; strow->addWidget(new QLabel("Tolerance"));
+    m_smartTol=dbl(0,1e6,100,10,1); strow->addWidget(m_smartTol); l->addLayout(strow);
     return gb;
 }
 
@@ -729,8 +732,18 @@ QGroupBox* ToolPanel::buildSegGroup()
       m_thresh.upper=dbl(-5000,50000,1000,10,1); m_thresh.upper->setPrefix("Upper: ");
       m_thresh.sliceOnly=new QCheckBox("Slice only");
       m_thresh.sliceAxis=new QComboBox; m_thresh.sliceAxis->addItems({"Axial(Z)","Coronal(Y)","Sagittal(X)"});
+      m_threshPreviewCheck=new QCheckBox("Live preview (cyan)");
       pl->addWidget(m_thresh.lower); pl->addWidget(m_thresh.upper);
       pl->addWidget(m_thresh.sliceOnly); pl->addWidget(m_thresh.sliceAxis);
+      pl->addWidget(m_threshPreviewCheck);
+      auto emitPreview=[this]{
+          emit thresholdPreviewRequested(m_thresh.lower->value(), m_thresh.upper->value(),
+                                         m_threshPreviewCheck->isChecked()); };
+      connect(m_threshPreviewCheck,&QCheckBox::toggled,this,[emitPreview](bool){ emitPreview(); });
+      connect(m_thresh.lower,QOverload<double>::of(&QDoubleSpinBox::valueChanged),this,
+              [this,emitPreview](double){ if(m_threshPreviewCheck->isChecked()) emitPreview(); });
+      connect(m_thresh.upper,QOverload<double>::of(&QDoubleSpinBox::valueChanged),this,
+              [this,emitPreview](double){ if(m_threshPreviewCheck->isChecked()) emitPreview(); });
       m_segParamStack->addWidget(p); }
 
     // Page 1: Region Grow
@@ -1029,6 +1042,17 @@ QGroupBox* ToolPanel::buildLabelToolsGroup()
     m_propFwdBtn=new QPushButton("▶"); m_propFwdBtn->setFixedWidth(30);
     prow->addWidget(m_propBwdBtn); prow->addWidget(m_propFwdBtn);
     l->addLayout(prow);
+
+    // Slice interpolation
+    auto* irow=new QHBoxLayout; irow->addWidget(new QLabel("Interpolate:"));
+    m_interpAxisCombo=new QComboBox; m_interpAxisCombo->addItems({"X(sag)","Y(cor)","Z(axi)"});
+    m_interpAxisCombo->setCurrentIndex(2);
+    irow->addWidget(m_interpAxisCombo);
+    m_interpBtn=new QPushButton("Fill between slices");
+    irow->addWidget(m_interpBtn); l->addLayout(irow);
+    connect(m_interpBtn,&QPushButton::clicked,this,[this]{
+        emit interpolateRequested(activeLabel(), m_interpAxisCombo->currentIndex());});
+
     m_updateSurfBtn=new QPushButton("Update 3D Surface");
     m_updateSurfBtn->setStyleSheet("background:#226;color:white;");
     l->addWidget(m_updateSurfBtn);
@@ -1329,6 +1353,8 @@ int     ToolPanel::activeLabel() const { return m_labelCombo->currentData().toIn
 int     ToolPanel::brushRadius() const { return m_brushRadiusSpin ? m_brushRadiusSpin->value() : 3; }
 int     ToolPanel::brushShape()  const { return m_brushShapeCombo ? m_brushShapeCombo->currentIndex() : 0; }
 bool    ToolPanel::twoDOnly()    const { return m_twoDCheckbox    ? m_twoDCheckbox->isChecked() : false; }
+bool    ToolPanel::smartBrush()  const { return m_smartCheck      ? m_smartCheck->isChecked() : false; }
+double  ToolPanel::brushTolerance() const { return m_smartTol     ? m_smartTol->value() : 0.0; }
 
 QString ToolPanel::toolMode() const
 {

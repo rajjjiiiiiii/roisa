@@ -191,6 +191,12 @@ void SliceView::paintEvent(QPaintEvent*)
         ovSlices.push_back({ &ovBufs.back(), ov.colormap, ov.alpha, ov.wmin, wr });
     }
 
+    // Threshold-preview slice (uint8 in-range volume)
+    std::vector<uint8_t> previewSlice;
+    if (m_previewBuf)
+        ROIVolume::sliceFromBufferU8(m_previewBuf, NX, NY, NZ, m_axis, m_sliceIdx, previewSlice);
+    const bool hasPreview = (int)previewSlice.size() == rows*cols;
+
     // Build RGB32 image: base → overlays → mask
     QImage img(cols, rows, QImage::Format_RGB32);
     for (int row = 0; row < rows; ++row) {
@@ -225,6 +231,13 @@ void SliceView::paintEvent(QPaintEvent*)
                 ir = std::min(255,(int)(ir*(1-a)+lr*a));
                 ig = std::min(255,(int)(ig*(1-a)+lg*a));
                 ib = std::min(255,(int)(ib*(1-a)+lb*a));
+            }
+
+            // ── Live threshold preview tint (cyan) ───────────────────────────
+            if (hasPreview && previewSlice[row*cols+col]) {
+                ir = (int)(ir*0.4f);
+                ig = (int)(ig*0.4f + 200*0.6f);
+                ib = (int)(ib*0.4f + 255*0.6f);
             }
             line[col] = qRgb(std::min(255,ir), std::min(255,ig), std::min(255,ib));
         }

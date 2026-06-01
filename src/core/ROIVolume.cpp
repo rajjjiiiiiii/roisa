@@ -25,6 +25,7 @@
 #include <itkLinearInterpolateImageFunction.h>
 #include <itkNearestNeighborInterpolateImageFunction.h>
 #include <itkResampleImageFilter.h>
+#include <itkSignedMaurerDistanceMapImageFilter.h>
 
 // ITK registration
 #include <itkCenteredTransformInitializer.h>
@@ -439,6 +440,22 @@ void ROIVolume::sliceFromBuffer(const float* buf, int NX, int NY, int NZ,
     }
 }
 
+void ROIVolume::sliceFromBufferU8(const uint8_t* buf, int NX, int NY, int NZ,
+                                   int axis, int idx, std::vector<uint8_t>& dst)
+{
+    if (!buf) { dst.clear(); return; }
+    int rows = (axis == 0) ? NY : NX;
+    int cols = (axis == 2) ? NY : NZ;
+    dst.resize(rows * cols);
+    for (int row = 0; row < rows; ++row)
+    for (int col = 0; col < cols; ++col) {
+        int lin = (axis == 0) ? linearIdx(idx, row, col, NX, NY)
+                : (axis == 1) ? linearIdx(row, idx, col, NX, NY)
+                              : linearIdx(row, col, idx, NX, NY);
+        dst[row * cols + col] = buf[lin];
+    }
+}
+
 void ROIVolume::getIntensitySlice(int axis, int idx,
                                    std::vector<float>& dst) const
 {
@@ -543,6 +560,76 @@ void ROIVolume::replaceMask(Int16Ptr newMask)
 }
 
 // ── Clear ─────────────────────────────────────────────────────────────────────
+
+int ROIVolume::interpolateLabel(int label, int axis)
+{
+    if (!m_mask) return 0;
+    const int NX = nx(), NY = ny(), NZ = nz();
+    const int rows = sliceRows(axis), cols = sliceCols(axis);
+    const int n    = (axis == 0) ? NX : (axis == 1) ? NY : NZ;
+    int16_t* mbuf  = m_mask->GetBufferPointer();
+
+    auto lin = [&](int row, int col, int idx) -> long {
+        if (axis == 0) return linearIdx(idx, row, col, NX, NY);
+        if (axis == 1) return linearIdx(row, idx, col, NX, NY);
+        return linearIdx(row, col, idx, NX, NY);
+    };
+
+    using Img2D  = itk::Image<unsigned char, 2>;
+    using Dist2D = itk::Image<float, 2>;
+    using Maurer = itk::SignedMaurerDistanceMapImageFilter<Img2D, Dist2D>;
+
+    auto makeSDF = [&](int idx, std::vector<float>& out) -> bool {
+        auto img = Img2D::New();
+        Img2D::SizeType sz; sz[0] = cols; sz[1] = rows;
+        Img2D::RegionType reg; reg.SetSize(sz);
+        img->SetRegions(reg); img->Allocate(); img->FillBuffer(0);
+        unsigned char* ib = img->GetBufferPointer();
+        bool any = false;
+        for (int r = 0; r < rows; ++r)
+        for (int c = 0; c < cols; ++c)
+            if (mbuf[lin(r, c, idx)] == label) { ib[r*cols + c] = 1; any = true; }
+        if (!any) return false;
+        auto f = Maurer::New();
+        f->SetInput(img);
+        f->SetUseImageSpacing(false);
+        f->SetSquaredDistance(false);
+        f->Update();
+        const float* db = f->GetOutput()->GetBufferPointer();
+        out.assign(db, db + rows*cols);
+        return true;
+    };
+
+    std::vector<int> pres;
+    for (int i = 0; i < n; ++i) {
+        bool any = false;
+        for (int r = 0; r < rows && !any; ++r)
+        for (int c = 0; c < cols && !any; ++c)
+            if (mbuf[lin(r, c, i)] == label) any = true;
+        if (any) pres.push_back(i);
+    }
+    if (pres.size() < 2) return 0;
+
+    int filled = 0;
+    for (size_t k = 0; k + 1 < pres.size(); ++k) {
+        int a = pres[k], b = pres[k+1];
+        if (b - a <= 1) continue;
+        std::vector<float> sa, sb;
+        if (!makeSDF(a, sa) || !makeSDF(b, sb)) continue;
+        for (int m = a + 1; m < b; ++m) {
+            const double t = (double)(m - a) / (b - a);
+            bool wrote = false;
+            for (int r = 0; r < rows; ++r)
+            for (int c = 0; c < cols; ++c) {
+                const double blend = (1 - t) * sa[r*cols + c] + t * sb[r*cols + c];
+                if (blend < 0) { mbuf[lin(r, c, m)] = (int16_t)label; wrote = true; }
+            }
+            if (wrote) ++filled;
+        }
+    }
+    notifyChange();
+    return filled;
+}
 
 void ROIVolume::clearLabel(int label)
 {
