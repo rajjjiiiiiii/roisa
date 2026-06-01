@@ -60,6 +60,8 @@ public:
     // ── Keyboard / preference helpers ───────────────────────────────────────────
     void setActiveLabelValue(int label);
     void setToolByName(const QString& name);
+    void setOperator(int idx);          // switch right-panel module programmatically
+    int  currentOperator() const;
     void bumpBrush(int delta);
     void applyPreferences(int brushRadius, int colormap, double halfLifeS);
 

@@ -3,6 +3,8 @@
 
 #include <QMainWindow>
 #include <QSettings>
+#include <QHash>
+#include <QIcon>
 #include <functional>
 #include <memory>
 #include <unordered_map>
@@ -16,7 +18,9 @@ class ToolPanel;
 class SeriesBrowser;
 class QMenu;
 class QAction;
+class QActionGroup;
 class QProgressBar;
+class QLabel;
 
 class MainWindow : public QMainWindow
 {
@@ -94,6 +98,21 @@ private:
     static constexpr int MAX_RECENT = 10;
 
     void buildMenus();
+
+    // ── VQ-style chrome: top action bar, left tool rail, status header ─────────
+    void    buildToolbars();
+    void    selectTool(const QString& key);     // rail click — single source of truth
+    void    onPanelToolMode(const QString& mode);// tool changed elsewhere → sync rail
+    void    updateStatusHeader();
+    void    doUndo();
+    static QIcon glyphIcon(const QString& glyph, const QString& color);
+
+    QString                  m_activeTool{"navigate"};
+    bool                     m_toolSync{false};
+    QActionGroup*            m_toolGroup{nullptr};
+    QHash<QString, QAction*> m_toolActs;
+    QLabel*                  m_statusHeader{nullptr};
+
     void afterLoad();
     void addRecentFile(const QString& path);
     void rebuildRecentMenu();

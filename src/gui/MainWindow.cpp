@@ -29,16 +29,27 @@
 #include <set>
 
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
+#include <QBrush>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFont>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPen>
+#include <QPixmap>
 #include <QScrollArea>
+#include <QSizePolicy>
 #include <QStatusBar>
+#include <QStyle>
+#include <QToolBar>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -53,15 +64,52 @@ MainWindow::MainWindow(QWidget* parent)
     m_volNames.push_back("(none)");
 
     setWindowTitle("ROISA — ROI Segmentation Assistant");
-    resize(1280, 800);
+    resize(1400, 860);
     setStyleSheet(
-        "QMainWindow{background:#1a1a1a;}"
-        "QGroupBox{color:#ccc;}"
-        "QLabel{color:#ccc;}"
+        "QMainWindow{background:#171717;}"
+        "QWidget{background:#1d1d1f;color:#d2d2d4;font-size:12px;}"
+        "QMenuBar{background:#111;color:#ccc;}"
+        "QMenuBar::item:selected{background:#2a4a6a;}"
+        "QMenu{background:#1e1e1e;color:#ccc;border:1px solid #333;}"
+        "QMenu::item:selected{background:#2a4a6a;}"
+        "QToolBar{background:#141414;border:none;spacing:3px;padding:3px;}"
+        "QToolBar::separator{background:#333;width:1px;margin:4px 4px;}"
+        "QToolButton{color:#cfcfd2;border-radius:4px;padding:4px 7px;}"
+        "QToolButton:hover{background:#2a3a4a;}"
+        "QToolButton:pressed{background:#1a3d5c;}"
+        "QGroupBox{background:#222226;border:1px solid #34343a;border-radius:6px;"
+        "  margin-top:10px;padding:8px 6px 6px;}"
+        "QGroupBox::title{subcontrol-origin:margin;left:9px;top:1px;padding:0 4px;"
+        "  color:#7fb0d0;font-weight:bold;}"
+        "QLabel{color:#c0c0c4;}"
         "QComboBox,QSpinBox,QDoubleSpinBox,QLineEdit{"
-        "  background:#2a2a2a;color:#eee;border:1px solid #555;}"
-        "QTableWidget{background:#222;color:#ddd;gridline-color:#444;}"
-        "QHeaderView::section{background:#2a2a2a;color:#aaa;border:1px solid #444;}");
+        "  background:#2a2a2e;color:#e2e2e4;border:1px solid #45454c;"
+        "  border-radius:4px;padding:3px 5px;min-height:18px;}"
+        "QComboBox:hover,QSpinBox:hover,QDoubleSpinBox:hover{border-color:#5a7fa0;}"
+        "QPushButton{background:#34343a;color:#d8d8da;border:1px solid #4a4a52;"
+        "  border-radius:5px;padding:5px 12px;}"
+        "QPushButton:hover{background:#3e4a58;border-color:#5a7fa0;}"
+        "QPushButton:pressed{background:#1a3d5c;}"
+        "QPushButton:disabled{color:#666;background:#26262a;border-color:#333;}"
+        "QPushButton[primary=\"true\"]{background:#22618f;color:#fff;"
+        "  border:1px solid #2f7fbf;font-weight:bold;}"
+        "QPushButton[primary=\"true\"]:hover{background:#2a72a8;}"
+        "QTabWidget::pane{border:1px solid #34343a;border-radius:4px;top:-1px;}"
+        "QTabBar::tab{background:#1d1d1f;color:#9a9aa0;padding:5px 12px;"
+        "  border:1px solid #34343a;border-bottom:none;"
+        "  border-top-left-radius:4px;border-top-right-radius:4px;}"
+        "QTabBar::tab:selected{background:#2a3a4a;color:#cfe2f0;}"
+        "QSlider::groove:horizontal{background:#3a3a40;height:5px;border-radius:3px;}"
+        "QSlider::sub-page:horizontal{background:#3f7fb0;border-radius:3px;}"
+        "QSlider::handle:horizontal{background:#cfe2f0;width:13px;height:13px;"
+        "  margin:-5px 0;border-radius:7px;}"
+        "QCheckBox{color:#c0c0c4;spacing:6px;}"
+        "QTableWidget{background:#1e1e1e;color:#ddd;gridline-color:#333;"
+        "  border:1px solid #34343a;border-radius:4px;}"
+        "QHeaderView::section{background:#2a2a2e;color:#aaa;border:1px solid #34343a;padding:3px;}"
+        "QStatusBar{background:#141414;color:#9aa;}"
+        "QProgressBar{background:#2a2a2e;border:1px solid #444;border-radius:3px;}"
+        "QProgressBar::chunk{background:#3f7fb0;}");
 
     // ── Central: orthogonal viewer ─────────────────────────────────────────
     m_viewer = new OrthoViewer(this);
@@ -262,13 +310,14 @@ MainWindow::MainWindow(QWidget* parent)
             m_viewer, &OrthoViewer::refresh);
     connect(m_viewer, &OrthoViewer::sliceReleased,
             this, &MainWindow::onMouseReleased);
-    connect(m_toolPanel, &ToolPanel::toolModeChanged, this, [this](const QString& m){
-        m_viewer->setPolygonMode(m == "polygon"); });
+    connect(m_toolPanel, &ToolPanel::toolModeChanged,
+            this, &MainWindow::onPanelToolMode);
     connect(m_viewer, &OrthoViewer::polygonClosed, this, &MainWindow::onPolygon);
 
     installRefChangeCallback();
 
     buildMenus();
+    buildToolbars();
 
     // Drag-and-drop loading
     setAcceptDrops(true);
@@ -457,27 +506,206 @@ void MainWindow::buildMenus()
 void MainWindow::keyPressEvent(QKeyEvent* e)
 {
     switch (e->key()) {
-    case Qt::Key_Z:
-        if (refVol() && refVol()->isLoaded()) {
-            refVol()->undo();
-            m_viewer->refresh();
-            m_toolPanel->refreshStats();
-        }
-        break;
+    case Qt::Key_Z: doUndo(); break;
     case Qt::Key_1: case Qt::Key_2: case Qt::Key_3:
     case Qt::Key_4: case Qt::Key_5: case Qt::Key_6:
     case Qt::Key_7: case Qt::Key_8: case Qt::Key_9: {
         int lbl = e->key() - Qt::Key_0;
         m_toolPanel->setActiveLabelValue(lbl);
         statusBar()->showMessage(QString("Active label: %1").arg(lbl));
+        updateStatusHeader();
         break; }
     case Qt::Key_BracketLeft:  m_toolPanel->bumpBrush(-1); break;
     case Qt::Key_BracketRight: m_toolPanel->bumpBrush(+1); break;
-    case Qt::Key_P: m_toolPanel->setToolByName("paint");   statusBar()->showMessage("Paint");   break;
-    case Qt::Key_E: m_toolPanel->setToolByName("erase");   statusBar()->showMessage("Erase");   break;
-    case Qt::Key_S: m_toolPanel->setToolByName("segment"); statusBar()->showMessage("Segment"); break;
+    case Qt::Key_V: selectTool("navigate"); break;
+    case Qt::Key_P: selectTool("brush");    break;
+    case Qt::Key_E: selectTool("eraser");   break;
+    case Qt::Key_G: selectTool("polygon");  break;
+    case Qt::Key_S: selectTool("segment");  break;
+    case Qt::Key_M: selectTool("measure");  break;
     default: QMainWindow::keyPressEvent(e);
     }
+}
+
+// ── VQ-style chrome: top action bar, left tool rail, status header ──────────────
+
+QIcon MainWindow::glyphIcon(const QString& glyph, const QString& color)
+{
+    QPixmap pm(28, 28);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    QColor c(color);
+    p.setPen(QPen(c, 1.4));
+    p.setBrush(QBrush(c.darker(260)));
+    p.drawRoundedRect(2, 2, 24, 24, 6, 6);
+    QFont f; f.setPixelSize(15); f.setBold(true);
+    p.setFont(f); p.setPen(c);
+    p.drawText(pm.rect(), Qt::AlignCenter, glyph);
+    p.end();
+    return QIcon(pm);
+}
+
+void MainWindow::doUndo()
+{
+    if (refVol() && refVol()->isLoaded()) {
+        refVol()->undo();
+        m_viewer->refresh();
+        m_toolPanel->refreshStats();
+        statusBar()->showMessage("Undo");
+    }
+}
+
+void MainWindow::buildToolbars()
+{
+    QStyle* st = style();
+
+    // ── Top action toolbar (global file/workflow verbs) ───────────────────────
+    auto* top = new QToolBar("Actions", this);
+    top->setMovable(false);
+    top->setIconSize(QSize(18, 18));
+    top->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    addToolBar(Qt::TopToolBarArea, top);
+
+    auto addAct = [&](QStyle::StandardPixmap sp, const QString& text,
+                      auto slot, const QString& sc = QString()) -> QAction* {
+        auto* a = new QAction(st->standardIcon(sp), text, this);
+        connect(a, &QAction::triggered, this, slot);
+        if (!sc.isEmpty()) a->setShortcut(QKeySequence(sc));
+        a->setToolTip(text);
+        top->addAction(a);
+        return a;
+    };
+
+    addAct(QStyle::SP_DialogOpenButton, "Open", &MainWindow::openImage, "Ctrl+O");
+    addAct(QStyle::SP_DirOpenIcon,      "DICOM", &MainWindow::openDicom);
+    top->addSeparator();
+    addAct(QStyle::SP_DialogSaveButton, "Save Session", &MainWindow::onSaveSession, "Ctrl+S");
+    addAct(QStyle::SP_DialogOpenButton, "Load Session", &MainWindow::onLoadSession);
+    addAct(QStyle::SP_FileIcon,         "Export Labels", &MainWindow::onExportLabels);
+    top->addSeparator();
+    addAct(QStyle::SP_ArrowBack,        "Undo", &MainWindow::doUndo, "Ctrl+Z");
+    addAct(QStyle::SP_FileDialogContentsView, "Report", &MainWindow::onGenerateReport, "Ctrl+R");
+    {
+        auto* shot = new QAction(st->standardIcon(QStyle::SP_DialogApplyButton),
+                                 "Snapshot", this);
+        shot->setShortcut(QKeySequence("Ctrl+Shift+S"));
+        connect(shot, &QAction::triggered, this, [this]{
+            QString fn = QFileDialog::getSaveFileName(this, "Save Screenshot",
+                          "roisa_screenshot.png", "PNG (*.png);;JPEG (*.jpg *.jpeg)");
+            if (fn.isEmpty()) return;
+            if (!m_viewer->grab().save(fn))
+                QMessageBox::critical(this, "Screenshot", "Failed to save:\n" + fn);
+            else statusBar()->showMessage("Screenshot saved: " + fn);
+        });
+        top->addAction(shot);
+    }
+    top->addSeparator();
+    addAct(QStyle::SP_FileDialogDetailedView, "Preferences", &MainWindow::onSettings, "Ctrl+,");
+
+    // spacer pushes the status header to the right edge
+    auto* spacer = new QWidget(top);
+    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    top->addWidget(spacer);
+    m_statusHeader = new QLabel(top);
+    m_statusHeader->setTextFormat(Qt::RichText);
+    m_statusHeader->setStyleSheet("color:#cfe2f0;font-size:12px;padding:2px 10px;");
+    top->addWidget(m_statusHeader);
+
+    // ── Left tool rail (interaction tools, always visible) ────────────────────
+    auto* rail = new QToolBar("Tools", this);
+    rail->setMovable(false);
+    rail->setIconSize(QSize(28, 28));
+    rail->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+    rail->setStyleSheet(
+        "QToolBar{background:#141414;border-right:1px solid #2a2a2a;spacing:2px;}"
+        "QToolButton{color:#9aa;font-size:9px;padding:4px 2px;border-radius:4px;}"
+        "QToolButton:hover{background:#222;}"
+        "QToolButton:checked{background:#1c3550;color:#cfe2f0;}");
+    addToolBar(Qt::LeftToolBarArea, rail);
+
+    m_toolGroup = new QActionGroup(this);
+    m_toolGroup->setExclusive(true);
+
+    struct ToolDef { const char* key; const char* label; const char* glyph;
+                     const char* color; };
+    const ToolDef tools[] = {
+        {"navigate", "Nav",    "✺", "#7fb0d0"},   // ✥-like
+        {"brush",    "Brush",  "✎", "#e6c84b"},   // ✎
+        {"eraser",   "Eraser", "⌫", "#e67a4b"},   // ⌫
+        {"polygon",  "Poly",   "▱", "#4bd0c8"},   // ▱
+        {"segment",  "Seg",    "◐", "#9b6cf0"},   // ◐
+        {"measure",  "Ruler",  "⊾", "#5bd06a"},   // ⊾
+    };
+    for (const auto& t : tools) {
+        QString key(t.key);
+        auto* a = new QAction(glyphIcon(QString::fromUtf8(t.glyph), t.color),
+                              t.label, this);
+        a->setCheckable(true);
+        a->setToolTip(t.label);
+        connect(a, &QAction::triggered, this, [this, key]{ selectTool(key); });
+        m_toolGroup->addAction(a);
+        rail->addAction(a);
+        m_toolActs.insert(key, a);
+    }
+    if (auto* nav = m_toolActs.value("navigate")) nav->setChecked(true);
+
+    updateStatusHeader();
+}
+
+void MainWindow::selectTool(const QString& key)
+{
+    m_activeTool = key;
+    m_toolSync = true;
+    if (key == "navigate")      m_toolPanel->setOperator(0);
+    else if (key == "measure")  m_toolPanel->setOperator(3);
+    else if (key == "brush")    m_toolPanel->setToolByName("paint");
+    else if (key == "eraser")   m_toolPanel->setToolByName("erase");
+    else if (key == "segment")  m_toolPanel->setToolByName("segment");
+    else if (key == "polygon")  m_toolPanel->setToolByName("polygon");
+    m_toolSync = false;
+
+    if (auto* a = m_toolActs.value(key)) { if (!a->isChecked()) a->setChecked(true); }
+    QString cap = key.left(1).toUpper() + key.mid(1);
+    statusBar()->showMessage("Tool: " + cap);
+    updateStatusHeader();
+}
+
+void MainWindow::onPanelToolMode(const QString& mode)
+{
+    m_viewer->setPolygonMode(mode == "polygon");
+    if (m_toolSync) return;
+    QString key;
+    if      (mode == "paint")   key = "brush";
+    else if (mode == "erase")   key = "eraser";
+    else if (mode == "segment") key = "segment";
+    else if (mode == "polygon") key = "polygon";
+    if (!key.isEmpty()) {
+        m_activeTool = key;
+        if (auto* a = m_toolActs.value(key)) { if (!a->isChecked()) a->setChecked(true); }
+        updateStatusHeader();
+    }
+}
+
+void MainWindow::updateStatusHeader()
+{
+    if (!m_statusHeader) return;
+    static const char* kLabelColors[] = {
+        "#000000", "#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4",
+        "#42d4f4", "#f032e6", "#bfef45", "#fabed4", "#469990" };
+    QString tool = m_activeTool.left(1).toUpper() + m_activeTool.mid(1);
+    int lab = m_toolPanel ? m_toolPanel->activeLabel() : 1;
+    QString color = (lab > 0 && lab < 11) ? kLabelColors[lab] : "#ccc";
+    QString ref = m_volNames.empty() ? "(none)" : m_volNames[0];
+    if (ref == "(none)" || !refVol() || !refVol()->isLoaded())
+        ref = "no reference loaded";
+    else
+        ref = QFileInfo(ref).fileName();
+    m_statusHeader->setText(
+        QString("<b>%1</b>&nbsp;&nbsp;·&nbsp;&nbsp;Label "
+                "<span style='color:%2;font-size:15px'>■</span> %3"
+                "&nbsp;&nbsp;·&nbsp;&nbsp;<span style='color:#9ab'>REF:</span> %4")
+            .arg(tool, color).arg(lab).arg(ref));
 }
 
 // ── Recent files ──────────────────────────────────────────────────────────────
@@ -594,6 +822,7 @@ void MainWindow::afterLoad()
         QString("Loaded REF: %1 × %2 × %3 voxels  |  spacing %.2f mm")
             .arg(refVol()->nx()).arg(refVol()->ny()).arg(refVol()->nz())
             .arg(refVol()->voxelSpacingMm()));
+    updateStatusHeader();
 }
 
 // ── Fusion ──────────────────────────────────────────────────────────────────────
@@ -782,8 +1011,10 @@ void MainWindow::brushFootprint(int cx, int cy, int cz,
 void MainWindow::onSeedOrPaint(int x, int y, int z)
 {
     if (!refVol() || !refVol()->isLoaded()) return;
-    QString mode = m_toolPanel->toolMode();
-    if (mode != "paint" && mode != "erase") return;
+    // Only brush/eraser tools draw; Navigate / Measure / Segment / Polygon use
+    // other interactions (the segment seed is handled via ToolPanel::onSeedSet).
+    if (m_activeTool != "brush" && m_activeTool != "eraser") return;
+    QString mode = (m_activeTool == "eraser") ? "erase" : "paint";
 
     int16_t label = (mode=="paint")
                     ? static_cast<int16_t>(m_toolPanel->activeLabel())

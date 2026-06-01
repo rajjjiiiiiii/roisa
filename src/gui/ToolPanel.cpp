@@ -116,6 +116,11 @@ ToolPanel::ToolPanel(QWidget* parent) : QWidget(parent)
     m_statusLabel->setWordWrap(true);
     m_statusLabel->setStyleSheet("color:#aaa; font-size:10px; padding:2px 4px;");
     ml->addWidget(m_statusLabel);
+
+    // Highlight the main run/apply/compute buttons with the accent style
+    // (see MainWindow stylesheet: QPushButton[primary="true"]).
+    for (QPushButton* btn : {m_regBtn, m_applySegBtn, m_applyMorphBtn})
+        if (btn) btn->setProperty("primary", true);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1586,9 +1591,22 @@ void ToolPanel::setActiveLabelValue(int label)
 void ToolPanel::setToolByName(const QString& name)
 {
     if (!m_toolCombo) return;
-    int idx = (name == "erase") ? 1 : (name == "segment") ? 2 : 0;
-    if (m_operatorCombo) m_operatorCombo->setCurrentIndex(1);   // ROI operator
+    int idx = (name == "erase")   ? 1 :
+              (name == "segment") ? 2 :
+              (name == "polygon") ? 3 : 0;
+    setOperator(1);                                             // ROI operator
     m_toolCombo->setCurrentIndex(idx);
+}
+
+void ToolPanel::setOperator(int idx)
+{
+    if (m_operatorCombo && idx >= 0 && idx < m_operatorCombo->count())
+        m_operatorCombo->setCurrentIndex(idx);
+}
+
+int ToolPanel::currentOperator() const
+{
+    return m_operatorCombo ? m_operatorCombo->currentIndex() : 0;
 }
 
 void ToolPanel::bumpBrush(int delta)
