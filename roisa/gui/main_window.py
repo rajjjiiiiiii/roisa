@@ -13,12 +13,20 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal
-from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, QSize
+from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QColor, QPixmap, QIcon
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QMainWindow,
     QMessageBox, QSplitter, QStatusBar, QVBoxLayout, QWidget,
+    QToolBar, QLabel, QStyle,
 )
+
+# Label colour palette — mirrors the overlay colours used in SliceView so the
+# status header swatch matches what the user paints on screen.
+_LABEL_COLORS = [
+    "#000000", "#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4",
+    "#42d4f4", "#f032e6", "#bfef45", "#fabed4", "#469990",
+]
 
 from ..core.roi_volume import ROIVolume
 from .image_list_widget import ImageListWidget
@@ -132,8 +140,8 @@ class MainWindow(QMainWindow):
             sv.sliceClicked.connect(self._on_paint_click)
 
         self._panel.refreshRequested.connect(self._on_refresh)
-        self._panel.toolModeChanged.connect(
-            lambda m: self._viewer.setPolygonMode(m == "polygon"))
+        # toolModeChanged is handled by _on_panel_tool_mode (wired after the
+        # tool rail is built) which also drives polygon mode + rail sync.
         self._viewer.polygonClosed.connect(self._on_polygon)
 
         # ── Status bar ────────────────────────────────────────────────────────
@@ -144,6 +152,13 @@ class MainWindow(QMainWindow):
             "Use ＋ Add in the Images panel to add input images.")
 
         self._build_menus()
+
+        # ── VQ-style chrome: top action bar, left tool rail, status header ─────
+        self._active_tool = "navigate"   # rail single-source-of-truth
+        self._tool_sync   = False        # re-entrancy guard for tool syncing
+        self._build_toolbars()
+        self._panel.toolModeChanged.connect(self._on_panel_tool_mode)
+
         self._apply_stylesheet()
         self.setAcceptDrops(True)
 
@@ -697,6 +712,168 @@ class MainWindow(QMainWindow):
         self._viewer.setPreviewVolume(preview)
         self._viewer.refresh()
 
+    # ── VQ-style chrome: toolbars, tool rail, status header ─────────────────────
+
+    @staticmethod
+    def _glyph_icon(letter: str, color: str) -> QIcon:
+        """Render a rounded colour chip with a glyph — used for tool-rail icons."""
+        from PyQt6.QtGui import QPainter, QFont, QPen, QBrush
+        pm = QPixmap(28, 28); pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(color), 1.4))
+        p.setBrush(QBrush(QColor(color).darker(260)))
+        p.drawRoundedRect(2, 2, 24, 24, 6, 6)
+        f = QFont(); f.setPixelSize(15); f.setBold(True); p.setFont(f)
+        p.setPen(QColor(color))
+        p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, letter)
+        p.end()
+        return QIcon(pm)
+
+    def _build_toolbars(self) -> None:
+        style = self.style()
+
+        # ── Top action toolbar (global file/workflow verbs) ───────────────────
+        top = QToolBar("Actions", self)
+        top.setMovable(False)
+        top.setIconSize(QSize(18, 18))
+        top.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, top)
+
+        def act(icon_sp, text, slot, shortcut=None, tip=None):
+            a = QAction(style.standardIcon(icon_sp), text, self)
+            a.triggered.connect(slot)
+            if shortcut: a.setShortcut(QKeySequence(shortcut))
+            a.setToolTip(tip or text)
+            return a
+
+        SP = QStyle.StandardPixmap
+        top.addAction(act(SP.SP_DialogOpenButton,  "Open",     self._on_open, "Ctrl+O",
+                          "Open reference image (DICOM / NIfTI)"))
+        top.addAction(act(SP.SP_FileDialogNewFolder, "+ Image", self._on_add_image, None,
+                          "Add an input/overlay image"))
+        top.addSeparator()
+        top.addAction(act(SP.SP_DialogSaveButton,  "Save Session", self._on_save_session, "Ctrl+S"))
+        top.addAction(act(SP.SP_DialogOpenButton,  "Load Session", self._on_load_session))
+        top.addAction(act(SP.SP_FileIcon,          "Export Labels", self._on_export_labels))
+        top.addSeparator()
+        self._undo_act = act(SP.SP_ArrowBack, "Undo", self._do_undo, "Ctrl+Z")
+        top.addAction(self._undo_act)
+        top.addAction(act(SP.SP_FileDialogContentsView, "Report", self._on_generate_report, "Ctrl+R"))
+        top.addAction(act(SP.SP_DialogApplyButton, "Snapshot", self._on_screenshot, "Ctrl+Shift+S"))
+        top.addSeparator()
+        top.addAction(act(SP.SP_FileDialogDetailedView, "Preferences", self._on_settings, "Ctrl+,"))
+
+        # spacer pushes the status header to the right edge
+        spacer = QWidget(); spacer.setSizePolicy(
+            spacer.sizePolicy().horizontalPolicy().Expanding,
+            spacer.sizePolicy().verticalPolicy().Preferred)
+        from PyQt6.QtWidgets import QSizePolicy
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        top.addWidget(spacer)
+        self._status_header = QLabel("")
+        self._status_header.setTextFormat(Qt.TextFormat.RichText)
+        self._status_header.setStyleSheet(
+            "color:#cfe2f0;font-size:12px;padding:2px 10px;")
+        top.addWidget(self._status_header)
+
+        # ── Left tool rail (interaction tools, always visible) ────────────────
+        rail = QToolBar("Tools", self)
+        rail.setMovable(False)
+        rail.setIconSize(QSize(28, 28))
+        rail.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        rail.setStyleSheet(
+            "QToolBar{background:#141414;border-right:1px solid #2a2a2a;spacing:2px;}"
+            "QToolButton{color:#9aa;font-size:9px;padding:4px 2px;border-radius:4px;}"
+            "QToolButton:hover{background:#222;}"
+            "QToolButton:checked{background:#1c3550;color:#cfe2f0;}")
+        self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, rail)
+
+        self._tool_group = QActionGroup(self)
+        self._tool_group.setExclusive(True)
+        self._tool_acts: dict[str, QAction] = {}
+        # (key, label, glyph, colour, shortcut)
+        tools = [
+            ("navigate", "Nav",    "✥", "#7fb0d0", "V"),
+            ("brush",    "Brush",  "✎", "#e6c84b", "P"),
+            ("eraser",   "Eraser", "⌫", "#e67a4b", "E"),
+            ("polygon",  "Poly",   "▱", "#4bd0c8", "G"),
+            ("segment",  "Seg",    "◐", "#9b6cf0", "S"),
+            ("measure",  "Ruler",  "⊾", "#5bd06a", "M"),
+        ]
+        for key, label, glyph, color, sc in tools:
+            a = QAction(self._glyph_icon(glyph, color), label, self)
+            a.setCheckable(True)
+            a.setToolTip(f"{label}  ({sc})")
+            a.triggered.connect(lambda _chk, k=key: self._select_tool(k))
+            self._tool_group.addAction(a)
+            rail.addAction(a)
+            self._tool_acts[key] = a
+        self._tool_acts["navigate"].setChecked(True)
+
+        # keep header fresh when the active label changes
+        if hasattr(self._panel, "_label_combo"):
+            self._panel._label_combo.currentIndexChanged.connect(
+                lambda *_: self._update_status_header())
+        self._update_status_header()
+
+    def _do_undo(self) -> None:
+        if self._ref_vol().is_loaded():
+            self._ref_vol().undo()
+            self._rebuild_fusion()
+            self._panel.refreshStats()
+            self._sb.showMessage("Undo")
+
+    def _select_tool(self, key: str) -> None:
+        """Tool-rail click — single source of truth for the active tool."""
+        self._active_tool = key
+        self._tool_sync = True
+        try:
+            if key == "navigate":
+                self._panel.setOperator(0)
+            elif key == "measure":
+                self._panel.setOperator(3)
+            elif key in ("brush", "eraser", "segment", "polygon"):
+                self._panel.setToolByName(
+                    {"brush": "paint", "eraser": "erase"}.get(key, key))
+        finally:
+            self._tool_sync = False
+        if key in self._tool_acts and not self._tool_acts[key].isChecked():
+            self._tool_acts[key].setChecked(True)
+        self._sb.showMessage(f"Tool: {key.capitalize()}")
+        self._update_status_header()
+
+    def _on_panel_tool_mode(self, mode: str) -> None:
+        """Tool changed from elsewhere (keyboard / ROI tab) — reflect on the rail."""
+        self._viewer.setPolygonMode(mode == "polygon")
+        if self._tool_sync:
+            return
+        key = {"paint": "brush", "erase": "eraser",
+               "segment": "segment", "polygon": "polygon"}.get(mode)
+        if key:
+            self._active_tool = key
+            act = self._tool_acts.get(key)
+            if act and not act.isChecked():
+                act.setChecked(True)
+            self._update_status_header()
+
+    def _update_status_header(self) -> None:
+        if not hasattr(self, "_status_header"):
+            return
+        tool = self._active_tool.capitalize()
+        lab = self._panel.activeLabel() if hasattr(self._panel, "activeLabel") else 1
+        color = _LABEL_COLORS[lab] if 0 < lab < len(_LABEL_COLORS) else "#ccc"
+        ref = self._vol_names[0] if self._vol_names else "(none)"
+        if ref == "(none)" or not self._ref_vol().is_loaded():
+            ref = "no reference loaded"
+        else:
+            ref = os.path.basename(ref.rstrip("/")) or ref
+        self._status_header.setText(
+            f"<b>{tool}</b>"
+            f"&nbsp;&nbsp;·&nbsp;&nbsp;Label "
+            f"<span style='color:{color};font-size:15px'>■</span> {lab}"
+            f"&nbsp;&nbsp;·&nbsp;&nbsp;<span style='color:#9ab'>REF:</span> {ref}")
+
     # ── Menu ──────────────────────────────────────────────────────────────────
 
     def _build_menus(self) -> None:
@@ -798,6 +975,7 @@ class MainWindow(QMainWindow):
             f"Loaded REF: {os.path.basename(path)}  —  "
             f"{vol.nx()}×{vol.ny()}×{vol.nz()} voxels, "
             f"spacing {vol.spacing_xyz()}")
+        self._update_status_header()
 
     def _on_open(self) -> None:
         """Load a new reference image — replaces all existing volumes."""
@@ -834,21 +1012,24 @@ class MainWindow(QMainWindow):
         if Qt.Key.Key_1 <= k <= Qt.Key.Key_9:
             self._panel.setActiveLabel(k - Qt.Key.Key_0)
             self._sb.showMessage(f"Active label: {k - Qt.Key.Key_0}")
+        elif k == Qt.Key.Key_V:
+            self._select_tool("navigate")
         elif k == Qt.Key.Key_P:
-            self._panel.setToolByName("paint");   self._sb.showMessage("Paint")
+            self._select_tool("brush")
         elif k == Qt.Key.Key_E:
-            self._panel.setToolByName("erase");   self._sb.showMessage("Erase")
+            self._select_tool("eraser")
+        elif k == Qt.Key.Key_G:
+            self._select_tool("polygon")
         elif k == Qt.Key.Key_S:
-            self._panel.setToolByName("segment"); self._sb.showMessage("Segment")
+            self._select_tool("segment")
+        elif k == Qt.Key.Key_M:
+            self._select_tool("measure")
         elif k == Qt.Key.Key_BracketLeft:
             self._panel.bumpBrush(-1)
         elif k == Qt.Key.Key_BracketRight:
             self._panel.bumpBrush(+1)
         elif k == Qt.Key.Key_Z:
-            if self._ref_vol().is_loaded():
-                self._ref_vol().undo()
-                self._rebuild_fusion()
-                self._panel.refreshStats()
+            self._do_undo()
         else:
             super().keyPressEvent(e)
 
@@ -1076,17 +1257,21 @@ class MainWindow(QMainWindow):
         self._panel.refreshStats()
 
     def _on_paint_click(self, x: int, y: int, z: int) -> None:
-        mode = self._panel.toolMode()
-        if mode in ("paint", "erase"):
-            self._ref_vol().push_undo()
-            self._do_paint(x, y, z, mode)
-            self._viewer.refresh()
+        # Only the brush/eraser tools draw on click-drag; Navigate / Measure /
+        # Segment / Polygon use other interactions and must not paint.
+        if self._active_tool not in ("brush", "eraser"):
+            return
+        mode = {"brush": "paint", "eraser": "erase"}[self._active_tool]
+        self._ref_vol().push_undo()
+        self._do_paint(x, y, z, mode)
+        self._viewer.refresh()
 
     def _on_paint_drag(self, x: int, y: int, z: int) -> None:
-        mode = self._panel.toolMode()
-        if mode in ("paint", "erase"):
-            self._do_paint(x, y, z, mode)
-            self._viewer.refresh()
+        if self._active_tool not in ("brush", "eraser"):
+            return
+        mode = {"brush": "paint", "eraser": "erase"}[self._active_tool]
+        self._do_paint(x, y, z, mode)
+        self._viewer.refresh()
 
     def _on_polygon(self, axis: int, pts) -> None:
         """Fill a closed polygon (drawn on one slice) into the REF mask."""
@@ -1145,31 +1330,64 @@ class MainWindow(QMainWindow):
     # ── Stylesheet ────────────────────────────────────────────────────────────
 
     def _apply_stylesheet(self) -> None:
+        # Accent = the same blue used across the operator selector / active tool.
         self.setStyleSheet("""
-            QMainWindow, QWidget { background:#1a1a1a; color:#ccc; }
+            QMainWindow { background:#171717; }
+            QWidget { background:#1d1d1f; color:#d2d2d4; font-size:12px; }
             QMenuBar { background:#111; color:#ccc; }
-            QMenuBar::item:selected { background:#333; }
+            QMenuBar::item:selected { background:#2a4a6a; }
             QMenu { background:#1e1e1e; color:#ccc; border:1px solid #333; }
             QMenu::item:selected { background:#2a4a6a; }
-            QGroupBox { border:1px solid #333; border-radius:4px;
-                        margin-top:8px; padding-top:8px; color:#aaa; }
-            QGroupBox::title { subcontrol-origin:margin; left:8px; color:#9a9; }
-            QLabel { color:#bbb; }
+
+            /* Top action toolbar */
+            QToolBar { background:#141414; border:none; spacing:3px; padding:3px; }
+            QToolBar::separator { background:#333; width:1px; margin:4px 4px; }
+            QToolButton { color:#cfcfd2; border-radius:4px; padding:4px 7px; }
+            QToolButton:hover { background:#2a3a4a; }
+            QToolButton:pressed { background:#1a3d5c; }
+
+            /* Group boxes — lighter card look with a clear titled header */
+            QGroupBox { background:#222226; border:1px solid #34343a;
+                        border-radius:6px; margin-top:10px; padding:8px 6px 6px; }
+            QGroupBox::title { subcontrol-origin:margin; left:9px; top:1px;
+                               padding:0 4px; color:#7fb0d0; font-weight:bold; }
+            QLabel { color:#c0c0c4; }
+
             QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit {
-                background:#252525; color:#ccc; border:1px solid #444;
-                border-radius:2px; padding:2px 4px; }
-            QPushButton { background:#2a2a2a; color:#bbb;
-                          border:1px solid #444; border-radius:3px; padding:3px 8px; }
-            QPushButton:hover { background:#333; }
+                background:#2a2a2e; color:#e2e2e4; border:1px solid #45454c;
+                border-radius:4px; padding:3px 5px; min-height:18px; }
+            QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover { border-color:#5a7fa0; }
+            QComboBox::drop-down { border:none; width:18px; }
+
+            /* Standard vs primary buttons */
+            QPushButton { background:#34343a; color:#d8d8da;
+                          border:1px solid #4a4a52; border-radius:5px;
+                          padding:5px 12px; }
+            QPushButton:hover { background:#3e4a58; border-color:#5a7fa0; }
             QPushButton:pressed { background:#1a3d5c; }
-            QTabWidget::pane { border:1px solid #333; }
-            QTabBar::tab { background:#222; color:#aaa; padding:4px 10px;
-                           border:1px solid #333; border-bottom:none; }
-            QTabBar::tab:selected { background:#2a2a2a; color:#eee; }
-            QSlider::groove:horizontal { background:#333; height:4px; border-radius:2px; }
-            QSlider::handle:horizontal { background:#668; width:12px; height:12px;
-                                          margin:-4px 0; border-radius:6px; }
+            QPushButton:disabled { color:#666; background:#26262a; border-color:#333; }
+            QPushButton[primary="true"] { background:#22618f; color:#fff;
+                          border:1px solid #2f7fbf; font-weight:bold; }
+            QPushButton[primary="true"]:hover { background:#2a72a8; }
+
+            QTabWidget::pane { border:1px solid #34343a; border-radius:4px; top:-1px; }
+            QTabBar::tab { background:#1d1d1f; color:#9a9aa0; padding:5px 12px;
+                           border:1px solid #34343a; border-bottom:none;
+                           border-top-left-radius:4px; border-top-right-radius:4px; }
+            QTabBar::tab:selected { background:#2a3a4a; color:#cfe2f0; }
+            QTabBar::tab:hover { color:#cfcfd2; }
+
+            QSlider::groove:horizontal { background:#3a3a40; height:5px; border-radius:3px; }
+            QSlider::sub-page:horizontal { background:#3f7fb0; border-radius:3px; }
+            QSlider::handle:horizontal { background:#cfe2f0; width:13px; height:13px;
+                                          margin:-5px 0; border-radius:7px; }
             QScrollArea { border:none; }
-            QTableWidget { background:#1e1e1e; color:#ccc; gridline-color:#333; }
-            QHeaderView::section { background:#252525; color:#aaa; border:1px solid #333; }
+            QCheckBox { color:#c0c0c4; spacing:6px; }
+            QTableWidget { background:#1e1e1e; color:#ccc; gridline-color:#333;
+                           border:1px solid #34343a; border-radius:4px; }
+            QHeaderView::section { background:#2a2a2e; color:#aaa; border:1px solid #34343a;
+                                   padding:3px; }
+            QStatusBar { background:#141414; color:#9aa; }
+            QProgressBar { background:#2a2a2e; border:1px solid #444; border-radius:3px; }
+            QProgressBar::chunk { background:#3f7fb0; }
         """)

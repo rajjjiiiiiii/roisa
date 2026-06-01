@@ -145,6 +145,13 @@ class ToolPanel(QWidget):
         self._status.setStyleSheet("color:#aaa;font-size:10px;padding:2px 4px;")
         ml.addWidget(self._status)
 
+        # Highlight the main "run/apply/compute" buttons with the accent style.
+        for attr in ("_reg_run", "_man_apply", "_quant_compute",
+                     "_tac_btn", "_apply_seg_btn"):
+            btn = getattr(self, attr, None)
+            if btn is not None:
+                btn.setProperty("primary", True)
+
     # ══════════════════════════════════════════════════════════════════════════
     # Operator page builders
     # ══════════════════════════════════════════════════════════════════════════
@@ -909,11 +916,18 @@ class ToolPanel(QWidget):
     def setToolByName(self, name: str) -> None:
         if not hasattr(self, "_tool_combo"):
             return
-        idx = {"paint": 0, "erase": 1, "segment": 2}.get(name.lower())
+        idx = {"paint": 0, "erase": 1, "segment": 2, "polygon": 3}.get(name.lower())
         if idx is not None:
-            if hasattr(self, "_op_combo"):
-                self._op_combo.setCurrentIndex(1)   # ROI operator
+            self.setOperator(1)                     # ROI operator
             self._tool_combo.setCurrentIndex(idx)
+
+    def setOperator(self, idx: int) -> None:
+        """Switch the right-panel module (operator) programmatically."""
+        if hasattr(self, "_op_combo") and 0 <= idx < self._op_combo.count():
+            self._op_combo.setCurrentIndex(idx)
+
+    def currentOperator(self) -> int:
+        return self._op_combo.currentIndex() if hasattr(self, "_op_combo") else 0
 
     def bumpBrush(self, delta: int) -> None:
         if hasattr(self, "_brush_radius"):
