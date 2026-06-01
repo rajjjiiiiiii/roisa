@@ -121,6 +121,7 @@ set(SOURCES
     src/gui/ImageListWidget.cpp
     src/gui/TacWidget.cpp
     src/gui/BarsWidget.cpp
+    src/gui/SettingsDialog.cpp
 )
 
 set(HEADERS
@@ -140,6 +141,7 @@ set(HEADERS
     src/gui/TacWidget.h
     src/gui/BgWorker.h
     src/gui/BarsWidget.h
+    src/gui/SettingsDialog.h
 )
 
 add_executable(roisa ${SOURCES} ${HEADERS})

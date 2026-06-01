@@ -561,6 +561,45 @@ void ROIVolume::replaceMask(Int16Ptr newMask)
 
 // ── Clear ─────────────────────────────────────────────────────────────────────
 
+std::vector<int> ROIVolume::presentLabels() const
+{
+    std::vector<int> out;
+    if (!m_mask) return out;
+    const int16_t* buf = m_mask->GetBufferPointer();
+    const long n = static_cast<long>(m_mask->GetLargestPossibleRegion().GetNumberOfPixels());
+    std::set<int> seen;
+    for (long i = 0; i < n; ++i) if (buf[i] > 0) seen.insert(buf[i]);
+    out.assign(seen.begin(), seen.end());
+    return out;
+}
+
+bool ROIVolume::saveLabelBinary(int label, const std::string& path) const
+{
+    if (!m_mask) return false;
+    try {
+        auto bin = Uint8Image3::New();
+        bin->SetRegions(m_mask->GetLargestPossibleRegion());
+        bin->SetSpacing(m_mask->GetSpacing());
+        bin->SetOrigin(m_mask->GetOrigin());
+        bin->SetDirection(m_mask->GetDirection());
+        bin->Allocate();
+        const int16_t* src = m_mask->GetBufferPointer();
+        uint8_t* dst = bin->GetBufferPointer();
+        const long n = static_cast<long>(m_mask->GetLargestPossibleRegion().GetNumberOfPixels());
+        for (long i = 0; i < n; ++i) dst[i] = (src[i] == label) ? 1 : 0;
+
+        using Writer = itk::ImageFileWriter<Uint8Image3>;
+        auto w = Writer::New();
+        w->SetFileName(path);
+        w->SetInput(bin);
+        w->Update();
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "saveLabelBinary error: " << e.what() << "\n";
+        return false;
+    }
+}
+
 int ROIVolume::interpolateLabel(int label, int axis)
 {
     if (!m_mask) return 0;

@@ -1519,6 +1519,35 @@ void ToolPanel::setBusy(bool busy)
     QPushButton* btns[] = { m_applySegBtn, m_regRunBtn, m_manApplyBtn,
                             m_manResetBtn, m_quantComputeBtn, m_tacBtn };
     for (QPushButton* b : btns) if (b) b->setEnabled(!busy);
+    emit busyChanged(busy);
+}
+
+void ToolPanel::setActiveLabelValue(int label)
+{
+    if (!m_labelCombo) return;
+    int i = m_labelCombo->findData(label);
+    if (i >= 0) m_labelCombo->setCurrentIndex(i);
+}
+
+void ToolPanel::setToolByName(const QString& name)
+{
+    if (!m_toolCombo) return;
+    int idx = (name == "erase") ? 1 : (name == "segment") ? 2 : 0;
+    if (m_operatorCombo) m_operatorCombo->setCurrentIndex(1);   // ROI operator
+    m_toolCombo->setCurrentIndex(idx);
+}
+
+void ToolPanel::bumpBrush(int delta)
+{
+    if (m_brushRadiusSpin)
+        m_brushRadiusSpin->setValue(m_brushRadiusSpin->value() + delta);
+}
+
+void ToolPanel::applyPreferences(int brushRadius, int colormap, double halfLifeS)
+{
+    if (m_brushRadiusSpin) m_brushRadiusSpin->setValue(brushRadius);
+    if (m_colormapCombo)   m_colormapCombo->setCurrentIndex(colormap);
+    if (m_suvHalf)         m_suvHalf->setValue(halfLifeS);
 }
 
 // ── Morph / Edit / I/O callbacks ──────────────────────────────────────────────

@@ -16,6 +16,7 @@ class ToolPanel;
 class SeriesBrowser;
 class QMenu;
 class QAction;
+class QProgressBar;
 
 class MainWindow : public QMainWindow
 {
@@ -29,6 +30,8 @@ public:
 
 protected:
     void keyPressEvent(QKeyEvent* e) override;
+    void dragEnterEvent(QDragEnterEvent* e) override;
+    void dropEvent(QDropEvent* e) override;
 
 private slots:
     void openImage();
@@ -49,6 +52,9 @@ private slots:
     // Segmentation/ROI tools
     void onInterpolate(int label, int axis);
     void onThresholdPreview(double lo, double hi, bool on);
+    // I/O & workflow
+    void onExportLabels();
+    void onSettings();
 
 private:
     // ── Multi-image state ─────────────────────────────────────────────────────
@@ -73,6 +79,9 @@ private:
 
     // Threshold-preview volume (owned; pointer handed to slice views)
     std::vector<uint8_t> m_previewVol;
+
+    QProgressBar* m_progress{nullptr};
+    bool isBusy() const { return m_bgBusy; }   // (segmentation tracked via panel)
 
     // Recent files
     QMenu*    m_recentMenu{nullptr};

@@ -49,6 +49,13 @@ public:
     /// Load an existing mask NIfTI (original-space) and resample to display.
     bool loadMask(const std::string& maskPath);
 
+    /// Write a binary (display-space) NIfTI for a single label.  Used by the
+    /// batch label export.  Returns false on failure.
+    bool saveLabelBinary(int label, const std::string& path) const;
+
+    /// Labels currently present in the mask (excluding 0).
+    std::vector<int> presentLabels() const;
+
     // ── State ─────────────────────────────────────────────────────────────────
     bool isLoaded() const { return static_cast<bool>(m_displayImg); }
 

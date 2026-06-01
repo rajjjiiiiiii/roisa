@@ -5,9 +5,15 @@
 #include "SeriesBrowser.h"
 #include "ToolPanel.h"
 #include "BgWorker.h"
+#include "SettingsDialog.h"
 #include "../core/ROIAlgorithms.h"
 #include "../core/SUV.h"
 
+#include <QDir>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QProgressBar>
 #include <QThread>
 #include <fstream>
 #include <memory>
@@ -226,10 +232,45 @@ MainWindow::MainWindow(QWidget* parent)
     installRefChangeCallback();
 
     buildMenus();
+
+    // Drag-and-drop loading
+    setAcceptDrops(true);
+
+    // Indeterminate progress indicator for background operations
+    m_progress = new QProgressBar(this);
+    m_progress->setMaximumWidth(140);
+    m_progress->setRange(0, 0);          // indeterminate
+    m_progress->setTextVisible(false);
+    m_progress->setVisible(false);
+    statusBar()->addPermanentWidget(m_progress);
+    connect(m_toolPanel, &ToolPanel::busyChanged, this,
+            [this](bool busy){ if (m_progress) m_progress->setVisible(busy); });
+
     statusBar()->showMessage(
         "Ready — File → Open Image or Open DICOM  |  "
         "Ctrl+Scroll=zoom  Right-drag=W/L  Mid-drag=pan  "
-        "Z=undo  [ ]=brush size  1-9=label");
+        "Z=undo  [ ]=brush size  1-9=label  |  drag a file to load");
+}
+
+// ── Drag-and-drop ───────────────────────────────────────────────────────────────
+
+void MainWindow::dragEnterEvent(QDragEnterEvent* e)
+{
+    if (e->mimeData()->hasUrls()) e->acceptProposedAction();
+}
+
+void MainWindow::dropEvent(QDropEvent* e)
+{
+    const auto urls = e->mimeData()->urls();
+    if (urls.isEmpty()) return;
+    const QString p = urls.front().toLocalFile();
+    if (!p.isEmpty()) {
+        if (m_bgBusy || m_toolPanel->isSegRunning()) {
+            statusBar()->showMessage("Busy — wait for the current operation to finish.");
+            return;
+        }
+        loadPath(p);
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -275,6 +316,13 @@ void MainWindow::buildMenus()
     screenshotAct->setShortcut(QKeySequence("Ctrl+Shift+S"));
     fileMenu->addSeparator();
     fileMenu->addAction(screenshotAct);
+    auto* exportLabelsAct = new QAction("Export Labels (NIfTI)…", this);
+    fileMenu->addAction(exportLabelsAct);
+    fileMenu->addSeparator();
+
+    auto* prefsAct = new QAction("Preferences…", this);
+    prefsAct->setShortcut(QKeySequence("Ctrl+,"));
+    fileMenu->addAction(prefsAct);
     fileMenu->addSeparator();
 
     auto* quitAct = new QAction("Quit", this);
@@ -283,6 +331,8 @@ void MainWindow::buildMenus()
 
     connect(openAct,  &QAction::triggered, this, &MainWindow::openImage);
     connect(dicomAct, &QAction::triggered, this, &MainWindow::openDicom);
+    connect(exportLabelsAct, &QAction::triggered, this, &MainWindow::onExportLabels);
+    connect(prefsAct, &QAction::triggered, this, &MainWindow::onSettings);
     connect(screenshotAct, &QAction::triggered, this, [this]{
         QString fn = QFileDialog::getSaveFileName(this, "Save Screenshot", "roisa_screenshot.png",
                                                   "PNG (*.png);;JPEG (*.jpg *.jpeg)");
@@ -366,19 +416,16 @@ void MainWindow::keyPressEvent(QKeyEvent* e)
         break;
     case Qt::Key_1: case Qt::Key_2: case Qt::Key_3:
     case Qt::Key_4: case Qt::Key_5: case Qt::Key_6:
-    case Qt::Key_7: case Qt::Key_8: case Qt::Key_9:
-        statusBar()->showMessage(QString("Label %1").arg(e->key()-Qt::Key_0));
-        break;
-    case Qt::Key_BracketLeft:
-        statusBar()->showMessage("Brush smaller  (use ToolPanel radius spinner)");
-        break;
-    case Qt::Key_BracketRight:
-        statusBar()->showMessage("Brush larger  (use ToolPanel radius spinner)");
-        break;
-    case Qt::Key_P: statusBar()->showMessage("Paint mode");   break;
-    case Qt::Key_E: statusBar()->showMessage("Erase mode");   break;
-    case Qt::Key_S: statusBar()->showMessage("Segment mode"); break;
-    case Qt::Key_Space: statusBar()->showMessage("Cycle tool"); break;
+    case Qt::Key_7: case Qt::Key_8: case Qt::Key_9: {
+        int lbl = e->key() - Qt::Key_0;
+        m_toolPanel->setActiveLabelValue(lbl);
+        statusBar()->showMessage(QString("Active label: %1").arg(lbl));
+        break; }
+    case Qt::Key_BracketLeft:  m_toolPanel->bumpBrush(-1); break;
+    case Qt::Key_BracketRight: m_toolPanel->bumpBrush(+1); break;
+    case Qt::Key_P: m_toolPanel->setToolByName("paint");   statusBar()->showMessage("Paint");   break;
+    case Qt::Key_E: m_toolPanel->setToolByName("erase");   statusBar()->showMessage("Erase");   break;
+    case Qt::Key_S: m_toolPanel->setToolByName("segment"); statusBar()->showMessage("Segment"); break;
     default: QMainWindow::keyPressEvent(e);
     }
 }
@@ -418,6 +465,10 @@ void MainWindow::openRecent()
 
 void MainWindow::loadPath(const QString& path)
 {
+    if (m_bgBusy || m_toolPanel->isSegRunning()) {
+        statusBar()->showMessage("Busy — wait for the current operation to finish.");
+        return;
+    }
     statusBar()->showMessage("Loading " + path + " …");
     // Replace all volumes; REF is the freshly loaded one
     m_volumes.clear();
@@ -541,6 +592,10 @@ void MainWindow::pushFusionTarget()
 
 void MainWindow::loadAdditionalImage(const QString& path)
 {
+    if (m_bgBusy || m_toolPanel->isSegRunning()) {
+        statusBar()->showMessage("Busy — wait for the current operation to finish.");
+        return;
+    }
     statusBar()->showMessage("Adding input image: " + path + " …");
     auto vol = std::make_unique<ROIVolume>();
     if (!vol->load(path.toStdString())) {
@@ -580,6 +635,10 @@ void MainWindow::activateImage(int idx)
 
 void MainWindow::removeImage(int idx)
 {
+    if (m_bgBusy || m_toolPanel->isSegRunning()) {
+        statusBar()->showMessage("Busy — wait for the current operation to finish.");
+        return;
+    }
     if (idx < 0 || idx >= (int)m_volumes.size()) return;
     if (idx == 0 && m_volumes.size() == 1) return;  // can't remove only image
     if (idx == 0) {
@@ -979,4 +1038,29 @@ void MainWindow::onThresholdPreview(double lo, double hi, bool on)
         m_previewVol[i] = (img[i] >= lo && img[i] <= hi) ? 1 : 0;
     m_viewer->setPreviewBuffer(m_previewVol.data());
     m_viewer->refresh();
+}
+
+// ── I/O & workflow ──────────────────────────────────────────────────────────────
+
+void MainWindow::onExportLabels()
+{
+    ROIVolume* ref = refVol();
+    if (!ref || !ref->isLoaded()) { statusBar()->showMessage("No mask to export."); return; }
+    auto labels = ref->presentLabels();
+    if (labels.empty()) { statusBar()->showMessage("Mask is empty — nothing to export."); return; }
+    QString dir = QFileDialog::getExistingDirectory(this, "Export labels to folder");
+    if (dir.isEmpty()) return;
+    int written = 0;
+    for (int lbl : labels) {
+        QString path = QDir(dir).filePath(QString("label_%1.nii.gz").arg(lbl));
+        if (ref->saveLabelBinary(lbl, path.toStdString())) ++written;
+    }
+    statusBar()->showMessage(QString("Exported %1 label mask(s) → %2").arg(written).arg(dir));
+}
+
+void MainWindow::onSettings()
+{
+    SettingsDialog dlg(this);
+    if (dlg.exec() == QDialog::Accepted)
+        m_toolPanel->applyPreferences(dlg.brushRadius(), dlg.colormap(), dlg.halfLifeS());
 }

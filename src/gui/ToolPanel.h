@@ -57,6 +57,12 @@ public:
     void setBusy(bool busy);
     bool isSegRunning() const { return m_segRunning; }
 
+    // ── Keyboard / preference helpers ───────────────────────────────────────────
+    void setActiveLabelValue(int label);
+    void setToolByName(const QString& name);
+    void bumpBrush(int delta);
+    void applyPreferences(int brushRadius, int colormap, double halfLifeS);
+
     // ── Quantification: SUV params / activity dropdown / results / TAC ───────────
     void       setQuantImages(const QList<QPair<QString,int>>& items);
     int        activityIndex() const;
@@ -93,6 +99,7 @@ signals:
     // Segmentation/ROI tools
     void interpolateRequested(int label, int axis);
     void thresholdPreviewRequested(double lo, double hi, bool on);
+    void busyChanged(bool busy);
 
 public slots:
     void onPositionChanged(int x, int y, int z);
