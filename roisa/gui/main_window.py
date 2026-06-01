@@ -776,10 +776,8 @@ class MainWindow(QMainWindow):
         top.addAction(act(SP.SP_FileDialogDetailedView, "Preferences", self._on_settings, "Ctrl+,"))
 
         # spacer pushes the status header to the right edge
-        spacer = QWidget(); spacer.setSizePolicy(
-            spacer.sizePolicy().horizontalPolicy().Expanding,
-            spacer.sizePolicy().verticalPolicy().Preferred)
         from PyQt6.QtWidgets import QSizePolicy
+        spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         top.addWidget(spacer)
         self._status_header = QLabel("")
@@ -855,18 +853,20 @@ class MainWindow(QMainWindow):
         self._update_status_header()
 
     def _on_panel_tool_mode(self, mode: str) -> None:
-        """Tool changed from elsewhere (keyboard / ROI tab) — reflect on the rail."""
+        """Tool changed from elsewhere (keyboard / ROI tab / operator dropdown)
+        — reflect it on the rail so the active-tool state never lies."""
         self._viewer.setPolygonMode(mode == "polygon")
         if self._tool_sync:
             return
-        key = {"paint": "brush", "erase": "eraser",
-               "segment": "segment", "polygon": "polygon"}.get(mode)
-        if key:
-            self._active_tool = key
-            act = self._tool_acts.get(key)
-            if act and not act.isChecked():
-                act.setChecked(True)
-            self._update_status_header()
+        # "" → Navigation/Registration/Quantification module (no drawing tool)
+        key = {"paint": "brush", "erase": "eraser", "segment": "segment",
+               "polygon": "polygon", "measure": "measure",
+               "": "navigate"}.get(mode, "navigate")
+        self._active_tool = key
+        act = self._tool_acts.get(key)
+        if act and not act.isChecked():
+            act.setChecked(True)
+        self._update_status_header()
 
     def _update_status_header(self) -> None:
         if not hasattr(self, "_status_header"):
@@ -1269,21 +1269,20 @@ class MainWindow(QMainWindow):
         self._panel.refreshStats()
 
     def _on_paint_click(self, x: int, y: int, z: int) -> None:
-        # Only the brush/eraser tools draw on click-drag; Navigate / Measure /
-        # Segment / Polygon use other interactions and must not paint.
-        if self._active_tool not in ("brush", "eraser"):
-            return
-        mode = {"brush": "paint", "eraser": "erase"}[self._active_tool]
-        self._ref_vol().push_undo()
-        self._do_paint(x, y, z, mode)
-        self._viewer.refresh()
+        # Gate on toolMode() — it is operator-aware (returns "" for Navigation /
+        # Registration / Quantification, "measure" for Measure), so painting is
+        # disabled outside the ROI module even if a paint tool was last active.
+        mode = self._panel.toolMode()
+        if mode in ("paint", "erase"):
+            self._ref_vol().push_undo()
+            self._do_paint(x, y, z, mode)
+            self._viewer.refresh()
 
     def _on_paint_drag(self, x: int, y: int, z: int) -> None:
-        if self._active_tool not in ("brush", "eraser"):
-            return
-        mode = {"brush": "paint", "eraser": "erase"}[self._active_tool]
-        self._do_paint(x, y, z, mode)
-        self._viewer.refresh()
+        mode = self._panel.toolMode()
+        if mode in ("paint", "erase"):
+            self._do_paint(x, y, z, mode)
+            self._viewer.refresh()
 
     def _on_polygon(self, axis: int, pts) -> None:
         """Fill a closed polygon (drawn on one slice) into the REF mask."""
