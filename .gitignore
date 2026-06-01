@@ -35,3 +35,6 @@ Makefile
 moc_*.cpp
 qrc_*.cpp
 ui_*.h
+
+# Conflict copies without an extension (e.g. ".gitignore 2")
+* [0-9]
