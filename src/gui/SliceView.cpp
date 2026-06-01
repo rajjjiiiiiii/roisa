@@ -288,6 +288,20 @@ void SliceView::paintEvent(QPaintEvent*)
         painter.drawText(ir.adjusted(4,18,0,0), Qt::AlignTop|Qt::AlignLeft, tag);
     }
 
+    // In-progress polygon ROI
+    if (m_polygonMode && !m_polyWidget.empty()) {
+        painter.setPen(QPen(QColor(120,255,160), 1, Qt::DashLine));
+        for (size_t i = 1; i < m_polyWidget.size(); ++i)
+            painter.drawLine(m_polyWidget[i-1], m_polyWidget[i]);
+        if (m_polyWidget.size() >= 3) {
+            painter.setPen(QPen(QColor(120,255,160,120), 1, Qt::DotLine));
+            painter.drawLine(m_polyWidget.back(), m_polyWidget.front());
+        }
+        painter.setBrush(QColor(120,255,160));
+        painter.setPen(QColor(120,255,160));
+        for (const QPoint& q : m_polyWidget) painter.drawEllipse(q, 2, 2);
+    }
+
     // Panel name + slice index
     static const char* NAMES[] = {"Sagittal","Coronal","Axial"};
     QFont f = font(); f.setPointSize(8); painter.setFont(f);
@@ -366,6 +380,21 @@ bool SliceView::widgetToVoxel(int wx, int wy,
 
 void SliceView::mousePressEvent(QMouseEvent* e)
 {
+    // ── Polygon ROI: left adds a vertex, right cancels the in-progress shape ──
+    if (m_polygonMode) {
+        if (e->button() == Qt::LeftButton) {
+            int vx, vy, vz;
+            if (widgetToVoxel(e->pos().x(), e->pos().y(), vx, vy, vz)) {
+                m_polyWidget.push_back(e->pos());
+                m_polyVoxel.push_back({vx, vy, vz});
+                update();
+            }
+        } else if (e->button() == Qt::RightButton) {
+            m_polyWidget.clear(); m_polyVoxel.clear(); update();
+        }
+        return;
+    }
+
     if (e->button() == Qt::LeftButton && m_measureMode != MeasureMode::None) {
         // ── Measurement click ─────────────────────────────────────────────────
         QRect ir = imageRect();
@@ -503,6 +532,16 @@ void SliceView::wheelEvent(QWheelEvent* e)
         emit scrolled(e->angleDelta().y() > 0 ? 1 : -1);
     }
     e->accept();
+}
+
+void SliceView::mouseDoubleClickEvent(QMouseEvent* e)
+{
+    if (m_polygonMode && m_polyVoxel.size() >= 3) {
+        emit polygonClosed(m_axis, m_polyVoxel);
+        m_polyWidget.clear(); m_polyVoxel.clear(); update();
+    } else {
+        QWidget::mouseDoubleClickEvent(e);
+    }
 }
 
 // ── Measurement helpers ───────────────────────────────────────────────────────

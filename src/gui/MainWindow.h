@@ -59,6 +59,7 @@ private slots:
     void onGenerateReport();
     void onSaveSession();
     void onLoadSession();
+    void onPolygon(int axis, const std::vector<std::array<int,3>>& voxels);
 
 private:
     // ── Multi-image state ─────────────────────────────────────────────────────

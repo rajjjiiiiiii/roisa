@@ -645,7 +645,7 @@ QGroupBox* ToolPanel::buildToolGroup()
     auto* gb=new QGroupBox("Tool & Label"); auto* l=new QVBoxLayout(gb);
     m_toolCombo=new QComboBox;
     // "Measure" is a separate operator — only ROI tools here
-    m_toolCombo->addItems({"Paint","Erase","Segment"});
+    m_toolCombo->addItems({"Paint","Erase","Segment","Polygon"});
     connect(m_toolCombo,QOverload<int>::of(&QComboBox::currentIndexChanged),
             this,&ToolPanel::onToolModeChanged);
     l->addWidget(m_toolCombo);
@@ -1460,6 +1460,7 @@ void ToolPanel::onOperatorChanged(int idx)
         if (idx == 1 && m_toolCombo)
             onToolModeChanged(m_toolCombo->currentIndex());
     }
+    emit toolModeChanged(toolMode());
 }
 
 void ToolPanel::onToolModeChanged(int /*idx*/)
@@ -1467,6 +1468,7 @@ void ToolPanel::onToolModeChanged(int /*idx*/)
     if (!m_viewer) return;
     // All ROI tools (paint/erase/segment) clear the measure overlay
     m_viewer->setMeasureMode(0);
+    emit toolModeChanged(toolMode());
 }
 
 void ToolPanel::onMeasureTypeChanged(int idx)

@@ -105,6 +105,7 @@ signals:
     void interpolateRequested(int label, int axis);
     void thresholdPreviewRequested(double lo, double hi, bool on);
     void busyChanged(bool busy);
+    void toolModeChanged(const QString& mode);
 
 public slots:
     void onPositionChanged(int x, int y, int z);

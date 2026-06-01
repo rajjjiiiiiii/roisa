@@ -262,6 +262,9 @@ MainWindow::MainWindow(QWidget* parent)
             m_viewer, &OrthoViewer::refresh);
     connect(m_viewer, &OrthoViewer::sliceReleased,
             this, &MainWindow::onMouseReleased);
+    connect(m_toolPanel, &ToolPanel::toolModeChanged, this, [this](const QString& m){
+        m_viewer->setPolygonMode(m == "polygon"); });
+    connect(m_viewer, &OrthoViewer::polygonClosed, this, &MainWindow::onPolygon);
 
     installRefChangeCallback();
 
@@ -1328,4 +1331,56 @@ void MainWindow::onLoadSession()
     rebuildFusion();
     pushFusionTarget();
     statusBar()->showMessage(QString("Session loaded — %1 image(s).").arg(m_volumes.size()));
+}
+
+// ── Polygon ROI fill ────────────────────────────────────────────────────────────
+
+void MainWindow::onPolygon(int axis, const std::vector<std::array<int,3>>& voxels)
+{
+    ROIVolume* ref = refVol();
+    if (!ref || !ref->isLoaded() || voxels.size() < 3) return;
+    const int16_t label = (int16_t)m_toolPanel->activeLabel();
+    const int NX = ref->nx(), NY = ref->ny(), NZ = ref->nz();
+    int16_t* mask = ref->maskImage()->GetBufferPointer();
+
+    // In-plane (col,row) vertices + constant index + grid dims for this axis.
+    std::vector<double> vc, vr;
+    int constIdx, nrow, ncol;
+    for (const auto& p : voxels) {
+        if      (axis == 2) { vc.push_back(p[0]); vr.push_back(p[1]); }  // col=x,row=y
+        else if (axis == 1) { vc.push_back(p[0]); vr.push_back(p[2]); }  // col=x,row=z
+        else                { vc.push_back(p[1]); vr.push_back(p[2]); }  // col=y,row=z
+    }
+    if      (axis == 2) { constIdx = voxels[0][2]; nrow = NY; ncol = NX; }
+    else if (axis == 1) { constIdx = voxels[0][1]; nrow = NZ; ncol = NX; }
+    else                { constIdx = voxels[0][0]; nrow = NZ; ncol = NY; }
+
+    const int c0 = std::max(0, (int)*std::min_element(vc.begin(), vc.end()));
+    const int c1 = std::min(ncol, (int)*std::max_element(vc.begin(), vc.end()) + 1);
+    const int r0 = std::max(0, (int)*std::min_element(vr.begin(), vr.end()));
+    const int r1 = std::min(nrow, (int)*std::max_element(vr.begin(), vr.end()) + 1);
+    if (c1 <= c0 || r1 <= r0) return;
+
+    ref->pushUndoAll();
+    const int n = (int)vc.size();
+    long count = 0;
+    for (int rr = r0; rr < r1; ++rr)
+    for (int cc = c0; cc < c1; ++cc) {
+        const double px = cc + 0.5, py = rr + 0.5;
+        bool inside = false;                       // even-odd ray casting
+        for (int i = 0, j = n - 1; i < n; j = i++) {
+            if (((vr[i] > py) != (vr[j] > py)) &&
+                (px < (vc[j] - vc[i]) * (py - vr[i]) / (vr[j] - vr[i]) + vc[i]))
+                inside = !inside;
+        }
+        if (!inside) continue;
+        long lin = (axis == 2) ? (long)cc + NX*rr + (long)NX*NY*constIdx
+                 : (axis == 1) ? (long)cc + NX*constIdx + (long)NX*NY*rr
+                               : (long)constIdx + NX*cc + (long)NX*NY*rr;
+        mask[lin] = label; ++count;
+    }
+    ref->notifyChange();
+    rebuildFusion();
+    m_toolPanel->refreshStats();
+    statusBar()->showMessage(QString("Polygon filled %1 voxels (label %2).").arg(count).arg(label));
 }

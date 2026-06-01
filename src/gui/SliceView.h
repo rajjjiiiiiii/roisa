@@ -5,6 +5,7 @@
 
 #include <QWidget>
 #include <QStringList>
+#include <QPoint>
 #include <array>
 #include <cstdint>
 #include <map>
@@ -66,6 +67,7 @@ public:
     void setSlab(int slab)             { m_slab = slab; update(); }
     void setShowColorbar(bool on)      { m_showColorbar = on; update(); }
     void setPreviewBuffer(const uint8_t* buf) { m_previewBuf = buf; update(); }
+    void setPolygonMode(bool on) { m_polygonMode = on; m_polyWidget.clear(); m_polyVoxel.clear(); update(); }
     void resetZoom();
 
     // ── Measurement API ────────────────────────────────────────────────────────
@@ -88,12 +90,14 @@ signals:
     void sliceReleased();
     void scrolled(int delta);
     void measurementAdded(QString description);
+    void polygonClosed(int axis, const std::vector<std::array<int,3>>& voxels);
 
 protected:
     void paintEvent       (QPaintEvent*)  override;
     void mousePressEvent  (QMouseEvent*)  override;
     void mouseMoveEvent   (QMouseEvent*)  override;
     void mouseReleaseEvent(QMouseEvent*)  override;
+    void mouseDoubleClickEvent(QMouseEvent*) override;
     void wheelEvent       (QWheelEvent*)  override;
 
 private:
@@ -141,6 +145,9 @@ private:
     int   m_slab{0};                           // projection half-width
     bool  m_showColorbar{false};
     const uint8_t* m_previewBuf{nullptr};      // threshold-preview volume (not owned)
+    bool m_polygonMode{false};
+    std::vector<QPoint>              m_polyWidget;  // vertices in widget pixels
+    std::vector<std::array<int,3>>   m_polyVoxel;   // vertices in (x,y,z) voxels
     std::vector<FusionLayer> m_overlays;       // fusion overlays on REF grid
     std::array<bool,256> m_labelVis;   // label 0..255 visibility
 

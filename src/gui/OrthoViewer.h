@@ -77,6 +77,7 @@ public:
     void setShowColorbar(bool on);
     void setVtkClip(bool enabled, int axis, double frac);
     void setPreviewBuffer(const uint8_t* buf);
+    void setPolygonMode(bool on);
     void resetAllZoom();
 
     // ── Fusion passthroughs ────────────────────────────────────────────────────
@@ -102,6 +103,7 @@ signals:
     void positionChanged(int x, int y, int z);
     void sliceReleased();
     void measurementAdded(QString description);
+    void polygonClosed(int axis, const std::vector<std::array<int,3>>& voxels);
 
 private slots:
     void onSliceClicked (int x, int y, int z);

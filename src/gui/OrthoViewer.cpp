@@ -102,8 +102,10 @@ OrthoViewer::OrthoViewer(QWidget* parent)
     connect(m_corView, &SliceView::scrolled, this, [this](int d){ onSliceScrolled(1, d); });
     connect(m_axiView, &SliceView::scrolled, this, [this](int d){ onSliceScrolled(2, d); });
 
-    for (auto* sv : {m_sagView, m_corView, m_axiView})
+    for (auto* sv : {m_sagView, m_corView, m_axiView}) {
         connect(sv, &SliceView::measurementAdded, this, &OrthoViewer::measurementAdded);
+        connect(sv, &SliceView::polygonClosed,    this, &OrthoViewer::polygonClosed);
+    }
 
     // Apply the default layout
     applyLayoutPreset(0);
@@ -345,6 +347,13 @@ void OrthoViewer::setPreviewBuffer(const uint8_t* buf)
     m_sagView->setPreviewBuffer(buf);
     m_corView->setPreviewBuffer(buf);
     m_axiView->setPreviewBuffer(buf);
+}
+
+void OrthoViewer::setPolygonMode(bool on)
+{
+    m_sagView->setPolygonMode(on);
+    m_corView->setPolygonMode(on);
+    m_axiView->setPolygonMode(on);
 }
 
 QStringList OrthoViewer::measurements() const
