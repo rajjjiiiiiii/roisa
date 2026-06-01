@@ -34,6 +34,7 @@ class OrthoViewer(QWidget):
     positionChanged = pyqtSignal(int, int, int)
     sliceReleased   = pyqtSignal()
     measurementAdded = pyqtSignal(str)
+    polygonClosed   = pyqtSignal(int, object)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -115,6 +116,7 @@ class OrthoViewer(QWidget):
             sv.scrolled.connect(
                 lambda d, a=axis: self._on_scrolled(a, d))
             sv.measurementAdded.connect(self.measurementAdded)
+            sv.polygonClosed.connect(self.polygonClosed)
 
         self._current_splitter: Optional[QSplitter] = None
         self._apply_preset(0)
@@ -296,6 +298,10 @@ class OrthoViewer(QWidget):
     def setPreviewVolume(self, vol) -> None:
         for sv in (self._sag_view, self._cor_view, self._axi_view):
             sv.setPreviewVolume(vol)
+
+    def setPolygonMode(self, on: bool) -> None:
+        for sv in (self._sag_view, self._cor_view, self._axi_view):
+            sv.setPolygonMode(on)
 
     def setMeasureMode(self, mode: int) -> None:
         for sv in (self._sag_view, self._cor_view, self._axi_view):

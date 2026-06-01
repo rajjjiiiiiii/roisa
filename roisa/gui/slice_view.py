@@ -37,6 +37,7 @@ class SliceView(QWidget):
     sliceReleased    = pyqtSignal()
     scrolled         = pyqtSignal(int)            # +1 / -1
     measurementAdded = pyqtSignal(str)            # human-readable result
+    polygonClosed    = pyqtSignal(int, object)    # axis, [(x,y,z), …]
 
     # ── Construction ──────────────────────────────────────────────────────────
 
@@ -65,6 +66,11 @@ class SliceView(QWidget):
 
         # Live threshold preview (boolean nz,ny,nx) drawn as a tint
         self._preview_vol = None
+
+        # Polygon / lasso ROI tool
+        self._polygon_mode = False
+        self._poly_widget: List[QPointF] = []   # vertices in widget pixels
+        self._poly_voxel:  List[tuple]   = []   # vertices in (x,y,z) voxels
 
         # Crosshair (voxel coords on the in-plane axes)
         self._ch = -1   # horizontal-axis voxel index
@@ -123,6 +129,11 @@ class SliceView(QWidget):
 
     def setPreviewVolume(self, vol) -> None:
         self._preview_vol = vol;  self.update()
+
+    def setPolygonMode(self, on: bool) -> None:
+        self._polygon_mode = on
+        self._poly_widget.clear(); self._poly_voxel.clear()
+        self.update()
 
     def setOverlays(self, overlays: List[dict]) -> None:
         """Set the fusion overlay layers (each on the REF grid)."""
@@ -229,6 +240,7 @@ class SliceView(QWidget):
         if self._proj_mode == 0:
             self._paint_crosshair(p)
         self._paint_measurements(p)
+        self._paint_polygon(p)
         if self._show_colorbar:
             self._paint_colorbar(p)
         if self._show_info:
@@ -354,6 +366,23 @@ class SliceView(QWidget):
         p.drawLine(0, int(row_px), w, int(row_px))
         p.drawLine(int(col_px), 0, int(col_px), h)
 
+    def _paint_polygon(self, p: QPainter) -> None:
+        if not self._polygon_mode or not self._poly_widget:
+            return
+        p.setPen(QPen(QColor(120, 255, 160), 1, Qt.PenStyle.DashLine))
+        for i in range(1, len(self._poly_widget)):
+            p.drawLine(self._poly_widget[i-1].toPoint(),
+                       self._poly_widget[i].toPoint())
+        # closing edge back to the first vertex (preview)
+        if len(self._poly_widget) >= 3:
+            p.setPen(QPen(QColor(120, 255, 160, 120), 1, Qt.PenStyle.DotLine))
+            p.drawLine(self._poly_widget[-1].toPoint(),
+                       self._poly_widget[0].toPoint())
+        p.setBrush(QColor(120, 255, 160))
+        p.setPen(QColor(120, 255, 160))
+        for q in self._poly_widget:
+            p.drawEllipse(q, 2, 2)
+
     def _paint_measurements(self, p: QPainter) -> None:
         pen = QPen(QColor(255, 220, 0), 1)
         p.setPen(pen)
@@ -427,6 +456,18 @@ class SliceView(QWidget):
     # ── Mouse events ───────────────────────────────────────────────────────────
 
     def mousePressEvent(self, e) -> None:
+        # Polygon ROI: left adds a vertex, right cancels the in-progress polygon
+        if self._polygon_mode:
+            if e.button() == Qt.MouseButton.LeftButton:
+                pos = e.position()
+                sc, sr = self._widget_to_slice(pos.x(), pos.y())
+                self._poly_widget.append(QPointF(pos.x(), pos.y()))
+                self._poly_voxel.append(self._slice_to_voxel(sc, sr))
+                self.update()
+            elif e.button() == Qt.MouseButton.RightButton:
+                self._poly_widget.clear(); self._poly_voxel.clear(); self.update()
+            return
+
         if e.button() == Qt.MouseButton.LeftButton:
             self._left_btn = True
             pos = e.position()
@@ -443,6 +484,12 @@ class SliceView(QWidget):
         elif e.button() == Qt.MouseButton.RightButton:
             self._right_btn  = True
             self._last_rpos  = e.position().toPoint()
+
+    def mouseDoubleClickEvent(self, e) -> None:
+        if self._polygon_mode and len(self._poly_voxel) >= 3:
+            self.polygonClosed.emit(self._axis, list(self._poly_voxel))
+            self._poly_widget.clear(); self._poly_voxel.clear()
+            self.update()
 
     def mouseMoveEvent(self, e) -> None:
         if self._left_btn:

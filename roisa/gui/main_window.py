@@ -132,6 +132,9 @@ class MainWindow(QMainWindow):
             sv.sliceClicked.connect(self._on_paint_click)
 
         self._panel.refreshRequested.connect(self._on_refresh)
+        self._panel.toolModeChanged.connect(
+            lambda m: self._viewer.setPolygonMode(m == "polygon"))
+        self._viewer.polygonClosed.connect(self._on_polygon)
 
         # ── Status bar ────────────────────────────────────────────────────────
         self._sb = QStatusBar(self)
@@ -1084,6 +1087,45 @@ class MainWindow(QMainWindow):
         if mode in ("paint", "erase"):
             self._do_paint(x, y, z, mode)
             self._viewer.refresh()
+
+    def _on_polygon(self, axis: int, pts) -> None:
+        """Fill a closed polygon (drawn on one slice) into the REF mask."""
+        ref = self._ref_vol()
+        if not ref.is_loaded() or ref.mask is None or len(pts) < 3:
+            return
+        import numpy as np
+        try:
+            from matplotlib.path import Path
+        except ImportError:
+            self._sb.showMessage("Polygon fill needs matplotlib.")
+            return
+        label = self._panel.activeLabel()
+        nz, ny, nx = ref.mask.shape
+        if axis == 2:    # axial: const z; (col,row)=(x,y)
+            verts = [(p[0], p[1]) for p in pts]; const = pts[0][2]; nrow, ncol = ny, nx
+        elif axis == 1:  # coronal: const y; (col,row)=(x,z)
+            verts = [(p[0], p[2]) for p in pts]; const = pts[0][1]; nrow, ncol = nz, nx
+        else:            # sagittal: const x; (col,row)=(y,z)
+            verts = [(p[1], p[2]) for p in pts]; const = pts[0][0]; nrow, ncol = nz, ny
+
+        cs = [v[0] for v in verts]; rs = [v[1] for v in verts]
+        c0, c1 = max(0, int(min(cs))), min(ncol, int(max(cs)) + 1)
+        r0, r1 = max(0, int(min(rs))), min(nrow, int(max(rs)) + 1)
+        if c1 <= c0 or r1 <= r0:
+            return
+        cc, rr = np.meshgrid(np.arange(c0, c1), np.arange(r0, r1))
+        inside = Path(verts).contains_points(
+            np.column_stack([cc.ravel() + 0.5, rr.ravel() + 0.5]))
+        sc = cc.ravel()[inside]; sr = rr.ravel()[inside]
+        if sc.size == 0:
+            return
+        ref.push_undo()
+        if axis == 2:   ref.mask[const, sr, sc] = label
+        elif axis == 1: ref.mask[sr, const, sc] = label
+        else:           ref.mask[sr, sc, const] = label
+        self._rebuild_fusion()
+        self._panel.refreshStats()
+        self._sb.showMessage(f"Polygon filled {int(sc.size)} voxels (label {label}).")
 
     def _do_paint(self, x: int, y: int, z: int, mode: str) -> None:
         """Always paints on the reference volume regardless of active view."""

@@ -98,6 +98,7 @@ class ToolPanel(QWidget):
     interpolateRequested      = pyqtSignal(int, int)         # label, axis
     thresholdPreviewRequested = pyqtSignal(float, float, bool)  # lo, hi, on
     busyChanged               = pyqtSignal(bool)             # heavy op running?
+    toolModeChanged           = pyqtSignal(str)              # paint/erase/segment/polygon/...
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -243,7 +244,7 @@ class ToolPanel(QWidget):
     def _build_tool_group(self) -> QGroupBox:
         gb = QGroupBox("Tool & Label"); l = QVBoxLayout(gb)
         self._tool_combo = QComboBox()
-        self._tool_combo.addItems(["Paint", "Erase", "Segment"])
+        self._tool_combo.addItems(["Paint", "Erase", "Segment", "Polygon"])
         self._tool_combo.currentIndexChanged.connect(self._on_tool_changed)
         l.addWidget(self._tool_combo)
         self._label_combo = QComboBox()
@@ -1310,10 +1311,12 @@ class ToolPanel(QWidget):
                 self._meas_type.currentIndex() + 1)
         else:
             self._viewer.setMeasureMode(0)
+        self.toolModeChanged.emit(self.toolMode())
 
     def _on_tool_changed(self, _idx: int) -> None:
         if self._viewer:
             self._viewer.setMeasureMode(0)
+        self.toolModeChanged.emit(self.toolMode())
 
     def _on_meas_type_changed(self, idx: int) -> None:
         if self._op_combo.currentIndex() == 3 and self._viewer:
