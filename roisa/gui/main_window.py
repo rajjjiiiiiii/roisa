@@ -103,6 +103,8 @@ class MainWindow(QMainWindow):
         self._panel.registerRequested.connect(self._on_register)
         self._panel.manualTransformRequested.connect(self._on_manual_transform)
         self._panel.resetRegistrationRequested.connect(self._on_reset_registration)
+        self._panel.saveTransformRequested.connect(self._on_save_transform)
+        self._panel.loadTransformRequested.connect(self._on_load_transform)
 
         # ── Wire Quantification operator ───────────────────────────────────────
         self._panel.suvComputeRequested.connect(self._on_suv_compute)
@@ -407,8 +409,10 @@ class MainWindow(QMainWindow):
             return register_images(moving_src, fixed_src, mode, iterations)
 
         def done(result):
-            if result is not None:
-                mv._apply_resampled(result)
+            resampled, tx = result if isinstance(result, tuple) else (result, None)
+            if resampled is not None:
+                mv._apply_resampled(resampled)
+                mv._last_transform = tx
                 mv._reg_manual = [0., 0., 0., 0., 0., 0.]
                 self._panel.setRegStatus(
                     f"IN{moving_idx} registered to REF ({mode}). Now aligned in fusion.")
@@ -445,6 +449,31 @@ class MainWindow(QMainWindow):
         else:
             self._panel.setRegStatus(f"IN{moving_idx} has no registration to reset.")
         self._rebuild_fusion()
+
+    def _on_save_transform(self, moving_idx: int) -> None:
+        if moving_idx < 1 or moving_idx >= len(self._volumes):
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save transform", f"IN{moving_idx}.tfm", "ITK transform (*.tfm)")
+        if not path:
+            return
+        if self._volumes[moving_idx].save_transform(path):
+            self._panel.setRegStatus(f"Saved IN{moving_idx} transform → {os.path.basename(path)}")
+        else:
+            self._panel.setRegStatus(f"IN{moving_idx} has no transform to save (register first).")
+
+    def _on_load_transform(self, moving_idx: int) -> None:
+        if moving_idx < 1 or moving_idx >= len(self._volumes):
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load transform", "", "ITK transform (*.tfm *.txt *.mat);;All files (*)")
+        if not path:
+            return
+        if self._volumes[moving_idx].load_transform(path, self._ref_vol()):
+            self._panel.setRegStatus(f"Applied transform to IN{moving_idx}.")
+            self._rebuild_fusion()
+        else:
+            self._panel.setRegStatus(f"Failed to load transform for IN{moving_idx}.")
 
     # ── Quantification handlers ──────────────────────────────────────────────────
 

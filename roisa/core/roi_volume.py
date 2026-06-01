@@ -83,6 +83,7 @@ class ROIVolume:
         # the current manual transform params [tx,ty,tz,rx,ry,rz] (mm, degrees).
         self._orig_sitk = None
         self._reg_manual = [0., 0., 0., 0., 0., 0.]
+        self._last_transform = None   # last registration/manual transform
 
     # ── Loading ────────────────────────────────────────────────────────────────
 
@@ -555,11 +556,12 @@ class ROIVolume:
         try:
             if self._orig_sitk is None:
                 self._orig_sitk = self._sitk_img      # backup for reset
-            resampled = register_images(self._orig_sitk, fixed._sitk_img,
-                                        mode, iterations)
+            resampled, tx = register_images(self._orig_sitk, fixed._sitk_img,
+                                            mode, iterations)
             if resampled is None:
                 return False
             self._apply_resampled(resampled)
+            self._last_transform = tx
             self._reg_manual = [0., 0., 0., 0., 0., 0.]
             return True
         except Exception as exc:
@@ -589,10 +591,41 @@ class ROIVolume:
             resampled = sitk.Resample(moving, fix, e,
                                       sitk.sitkLinear, 0., sitk.sitkFloat32)
             self._apply_resampled(resampled)
+            self._last_transform = e
             self._reg_manual = [tx, ty, tz, rx, ry, rz]
             return True
         except Exception as exc:
             print(f"[apply_manual_transform] {exc}")
+            return False
+
+    def save_transform(self, path: str) -> bool:
+        """Write the last registration/manual transform to a .tfm file."""
+        if self._last_transform is None:
+            return False
+        try:
+            sitk.WriteTransform(self._last_transform, path)
+            return True
+        except Exception as exc:
+            print(f"[save_transform] {exc}")
+            return False
+
+    def load_transform(self, path: str, fixed: "ROIVolume") -> bool:
+        """Read a transform and apply it to the original image, into `fixed`."""
+        if not self._loaded or fixed is None or not fixed.is_loaded():
+            return False
+        try:
+            tx = sitk.ReadTransform(path)
+            if self._orig_sitk is None:
+                self._orig_sitk = self._sitk_img
+            moving = sitk.Cast(self._orig_sitk, sitk.sitkFloat32)
+            fix    = sitk.Cast(fixed._sitk_img, sitk.sitkFloat32)
+            resampled = sitk.Resample(moving, fix, tx,
+                                      sitk.sitkLinear, 0., sitk.sitkFloat32)
+            self._apply_resampled(resampled)
+            self._last_transform = tx
+            return True
+        except Exception as exc:
+            print(f"[load_transform] {exc}")
             return False
 
     def reset_registration(self) -> bool:
@@ -671,8 +704,9 @@ def register_images(moving_img: "sitk.Image", fixed_img: "sitk.Image",
             reg.SetInitialTransform(init, inPlace=False)
             out_tx = reg.Execute(fix, moving)
 
-        return sitk.Resample(moving, fix, out_tx,
-                             sitk.sitkLinear, 0., sitk.sitkFloat32)
+        resampled = sitk.Resample(moving, fix, out_tx,
+                                  sitk.sitkLinear, 0., sitk.sitkFloat32)
+        return resampled, out_tx
     except Exception as exc:
         print(f"[register_images] {exc}")
-        return None
+        return None, None

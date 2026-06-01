@@ -82,6 +82,8 @@ class ToolPanel(QWidget):
     registerRequested        = pyqtSignal(int, str, int)     # movingIdx, mode, iters
     manualTransformRequested = pyqtSignal(int, float, float, float, float, float, float)
     resetRegistrationRequested = pyqtSignal(int)
+    saveTransformRequested   = pyqtSignal(int)
+    loadTransformRequested   = pyqtSignal(int)
     # Quantification operator (activityIdx indexes loaded images: 0=REF, 1+=inputs)
     suvComputeRequested  = pyqtSignal(int)
     suvAutofillRequested = pyqtSignal(int)
@@ -829,6 +831,18 @@ class ToolPanel(QWidget):
         self._man_reset = QPushButton("Reset")
         brow.addWidget(self._man_apply); brow.addWidget(self._man_reset)
         l.addLayout(brow)
+
+        trow = QHBoxLayout()
+        self._tf_save = QPushButton("Save Transform…")
+        self._tf_load = QPushButton("Load Transform…")
+        trow.addWidget(self._tf_save); trow.addWidget(self._tf_load)
+        l.addLayout(trow)
+        self._tf_save.clicked.connect(lambda: self.saveTransformRequested.emit(
+            self._reg_moving.currentData()) if self._reg_moving
+            and self._reg_moving.currentData() is not None else None)
+        self._tf_load.clicked.connect(lambda: self.loadTransformRequested.emit(
+            self._reg_moving.currentData()) if self._reg_moving
+            and self._reg_moving.currentData() is not None else None)
 
         def _apply():
             mv = self._reg_moving.currentData() if self._reg_moving else None
