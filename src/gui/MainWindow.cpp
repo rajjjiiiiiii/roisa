@@ -160,13 +160,15 @@ MainWindow::MainWindow(QWidget* parent)
         ROIVolume::FloatPtr moving = mv->ensureBackupAndMovingSource();
         ROIVolume::FloatPtr fixed  = ref->displayImage();
         auto result = std::make_shared<ROIVolume::FloatPtr>();
+        auto txOut  = std::make_shared<ROIVolume::TransformPtr>();
         m_toolPanel->setRegStatus(QString("Registering IN%1 (%2)… working in background")
                                   .arg(movingIdx).arg(mode));
         runBg(
-            [=]{ *result = ROIVolume::registerImages(moving, fixed, m, iters); },
-            [this, mv, result, movingIdx, mode]{
+            [=]{ *result = ROIVolume::registerImages(moving, fixed, m, iters, txOut.get()); },
+            [this, mv, result, txOut, movingIdx, mode]{
                 if (*result) {
                     mv->applyRegisteredImage(*result);
+                    mv->setLastTransform(*txOut);
                     m_toolPanel->setRegStatus(
                         QString("IN%1 registered to REF (%2). Now aligned in fusion.")
                             .arg(movingIdx).arg(mode));
@@ -201,6 +203,28 @@ MainWindow::MainWindow(QWidget* parent)
             ? QString("IN%1 restored to original (unregistered).").arg(movingIdx)
             : QString("IN%1 has no registration to reset.").arg(movingIdx));
         rebuildFusion();
+    });
+
+    connect(m_toolPanel, &ToolPanel::saveTransformRequested, this, [this](int idx){
+        if (idx < 1 || idx >= (int)m_volumes.size()) return;
+        QString p = QFileDialog::getSaveFileName(this, "Save transform",
+            QString("IN%1.tfm").arg(idx), "ITK transform (*.tfm)");
+        if (p.isEmpty()) return;
+        m_toolPanel->setRegStatus(m_volumes[idx]->saveTransform(p.toStdString())
+            ? QString("Saved IN%1 transform → %2").arg(idx).arg(QFileInfo(p).fileName())
+            : QString("IN%1 has no transform to save (register first).").arg(idx));
+    });
+    connect(m_toolPanel, &ToolPanel::loadTransformRequested, this, [this](int idx){
+        if (idx < 1 || idx >= (int)m_volumes.size()) return;
+        QString p = QFileDialog::getOpenFileName(this, "Load transform", "",
+            "ITK transform (*.tfm *.txt *.mat);;All files (*)");
+        if (p.isEmpty()) return;
+        if (m_volumes[idx]->loadTransform(p.toStdString(), refVol())) {
+            m_toolPanel->setRegStatus(QString("Applied transform to IN%1.").arg(idx));
+            rebuildFusion();
+        } else {
+            m_toolPanel->setRegStatus(QString("Failed to load transform for IN%1.").arg(idx));
+        }
     });
 
     // ── Quantification operator ──────────────────────────────────────────────

@@ -26,6 +26,8 @@
 #include <itkNearestNeighborInterpolateImageFunction.h>
 #include <itkResampleImageFilter.h>
 #include <itkSignedMaurerDistanceMapImageFilter.h>
+#include <itkTransformFileReader.h>
+#include <itkTransformFileWriter.h>
 
 // ITK registration
 #include <itkCenteredTransformInitializer.h>
@@ -1178,13 +1180,15 @@ typename TTx::Pointer registerLinear(RegPtr fixed, RegPtr moving, int iters)
 
 // Pure registration — no shared state mutated, safe to run off-thread.
 ROIVolume::FloatPtr ROIVolume::registerImages(FloatPtr movingImg, FloatPtr fixedImg,
-                                              int mode, int iterations)
+                                              int mode, int iterations,
+                                              TransformPtr* outTx)
 {
     if (!movingImg || !fixedImg) return nullptr;
     try {
         if (mode == 1) {                       // Affine
             auto tx = registerLinear<itk::AffineTransform<double,3>>(
                           fixedImg, movingImg, iterations);
+            if (outTx) *outTx = tx.GetPointer();
             return resampleByTransform(movingImg, fixedImg, tx);
         }
         else if (mode == 2) {                  // Deformable (rigid pre-align + BSpline)
@@ -1234,11 +1238,18 @@ ROIVolume::FloatPtr ROIVolume::registerImages(FloatPtr movingImg, FloatPtr fixed
             reg->SetSmoothingSigmasPerLevel(sigma);
             reg->Update();
 
+            if (outTx) {
+                auto comp = itk::CompositeTransform<double,3>::New();
+                comp->AddTransform(rigid);   // applied after btx
+                comp->AddTransform(btx);     // applied first
+                *outTx = comp.GetPointer();
+            }
             return resampleByTransform(preAligned, fixedImg, btx);
         }
         // Rigid (Euler3D)
         auto tx = registerLinear<itk::Euler3DTransform<double>>(
                       fixedImg, movingImg, iterations);
+        if (outTx) *outTx = tx.GetPointer();
         return resampleByTransform(movingImg, fixedImg, tx);
     }
     catch (const std::exception& e) {
@@ -1266,10 +1277,60 @@ bool ROIVolume::registerTo(const ROIVolume* fixed, int mode, int iterations)
 {
     if (!m_displayImg || !fixed || !fixed->m_displayImg) return false;
     FloatPtr moving = ensureBackupAndMovingSource();
-    FloatPtr result = registerImages(moving, fixed->m_displayImg, mode, iterations);
+    TransformPtr tx;
+    FloatPtr result = registerImages(moving, fixed->m_displayImg, mode, iterations, &tx);
     if (!result) return false;
     applyRegisteredImage(result);
+    m_lastTransform = tx;
     return true;
+}
+
+bool ROIVolume::saveTransform(const std::string& path) const
+{
+    if (!m_lastTransform) return false;
+    try {
+        auto w = itk::TransformFileWriterTemplate<double>::New();
+        w->SetInput(m_lastTransform);
+        w->SetFileName(path);
+        w->Update();
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "saveTransform error: " << e.what() << "\n";
+        return false;
+    }
+}
+
+bool ROIVolume::loadTransform(const std::string& path, const ROIVolume* fixed)
+{
+    if (!m_displayImg || !fixed || !fixed->m_displayImg) return false;
+    try {
+        auto reader = itk::TransformFileReaderTemplate<double>::New();
+        reader->SetFileName(path);
+        reader->Update();
+        auto list = reader->GetTransformList();
+        if (!list || list->empty()) return false;
+        TransformPtr tx = dynamic_cast<itk::Transform<double,3,3>*>(list->front().GetPointer());
+        if (!tx) return false;
+
+        if (!m_displayBackup) m_displayBackup = m_displayImg;
+        using ResampleF = itk::ResampleImageFilter<FloatImage3, FloatImage3>;
+        auto resample = ResampleF::New();
+        resample->SetInput(m_displayBackup);
+        resample->SetTransform(tx);
+        resample->SetReferenceImage(fixed->m_displayImg);
+        resample->UseReferenceImageOn();
+        resample->SetInterpolator(
+            itk::LinearInterpolateImageFunction<FloatImage3, double>::New());
+        resample->SetDefaultPixelValue(0.f);
+        resample->Update();
+
+        applyRegisteredImage(resample->GetOutput());
+        m_lastTransform = tx;
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "loadTransform error: " << e.what() << "\n";
+        return false;
+    }
 }
 
 bool ROIVolume::applyManualTransform(const ROIVolume* fixed,
@@ -1298,6 +1359,7 @@ bool ROIVolume::applyManualTransform(const ROIVolume* fixed,
         e->SetTranslation(t);
 
         m_displayImg = resampleByTransform(movingImg, fixedImg, e);
+        m_lastTransform = e.GetPointer();
         m_mask = createMask(m_displayImg);
         m_history.clear();
         notifyChange();

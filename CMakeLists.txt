@@ -30,6 +30,10 @@ find_package(ITK REQUIRED COMPONENTS
     ITKLevelSetsv4
     ITKStatistics
     ITKTransform
+    ITKIOTransformBase
+    ITKIOTransformInsightLegacy
+    ITKIOTransformHDF5
+    ITKIOTransformMatlab
     ITKRegistrationMethodsv4
     ITKOptimizersv4
     ITKRegistrationCommon

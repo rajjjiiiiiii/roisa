@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <itkImage.h>
+#include <itkTransform.h>
 
 class ROIVolume
 {
@@ -25,6 +26,7 @@ public:
     using FloatPtr    = FloatImage3::Pointer;
     using Int16Ptr    = Int16Image3::Pointer;
     using Uint8Ptr    = Uint8Image3::Pointer;
+    using TransformPtr = itk::Transform<double, 3, 3>::Pointer;
 
     static constexpr int TARGET_SIZE = 256;   // isotropic display resolution
     static constexpr int MAX_LABELS  = 255;
@@ -143,8 +145,17 @@ public:
 
     /// Pure registration: aligns `moving` to `fixed`, returns the resampled
     /// image (null on failure).  No shared state — safe to call off-thread.
+    /// If outTx is non-null, receives the optimized transform.
     static FloatPtr registerImages(FloatPtr moving, FloatPtr fixed,
-                                   int mode, int iterations);
+                                   int mode, int iterations,
+                                   TransformPtr* outTx = nullptr);
+
+    void setLastTransform(TransformPtr tx) { m_lastTransform = tx; }
+
+    /// Save the last registration/manual transform to a .tfm file.
+    bool saveTransform(const std::string& path) const;
+    /// Read a transform and apply it to the original image, into `fixed`.
+    bool loadTransform(const std::string& path, const ROIVolume* fixed);
 
     /// Ensure the pre-registration backup exists and return the source image to
     /// register (the backup).  Call on the GUI thread before threaded work.
@@ -229,6 +240,7 @@ private:
     FloatPtr m_origImg;      // original image (full resolution, for save)
     FloatPtr m_displayImg;   // float32, isotropically resampled to TARGET_SIZE
     FloatPtr m_displayBackup;// pre-registration display image (for Reset)
+    TransformPtr m_lastTransform;  // last registration/manual transform
     Int16Ptr m_mask;         // int16, same grid as m_displayImg
 
     float       m_vmin{0.f};

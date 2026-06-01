@@ -88,6 +88,8 @@ signals:
     void manualTransformRequested(int movingIdx, double tx, double ty, double tz,
                                   double rx, double ry, double rz);
     void resetRegistrationRequested(int movingIdx);
+    void saveTransformRequested(int movingIdx);
+    void loadTransformRequested(int movingIdx);
     // Quantification operator (activityIdx: 0=REF, 1+=inputs)
     void suvComputeRequested(int activityIdx);
     void suvAutofillRequested(int activityIdx);

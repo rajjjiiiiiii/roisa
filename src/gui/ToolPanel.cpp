@@ -582,6 +582,20 @@ QGroupBox* ToolPanel::buildManualRegGroup()
     brow->addWidget(m_manApplyBtn); brow->addWidget(m_manResetBtn);
     l->addLayout(brow);
 
+    auto* tfrow = new QHBoxLayout;
+    auto* tfSave = new QPushButton("Save Transform…");
+    auto* tfLoad = new QPushButton("Load Transform…");
+    tfrow->addWidget(tfSave); tfrow->addWidget(tfLoad);
+    l->addLayout(tfrow);
+    connect(tfSave, &QPushButton::clicked, this, [this]{
+        if (m_regMovingCombo && m_regMovingCombo->count() > 0)
+            emit saveTransformRequested(m_regMovingCombo->currentData().toInt());
+    });
+    connect(tfLoad, &QPushButton::clicked, this, [this]{
+        if (m_regMovingCombo && m_regMovingCombo->count() > 0)
+            emit loadTransformRequested(m_regMovingCombo->currentData().toInt());
+    });
+
     connect(m_manApplyBtn, &QPushButton::clicked, this, [this]{
         if (!m_regMovingCombo || m_regMovingCombo->count() == 0) {
             setRegStatus("Select a moving input first.");
