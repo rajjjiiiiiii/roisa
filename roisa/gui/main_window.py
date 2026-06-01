@@ -653,6 +653,10 @@ class MainWindow(QMainWindow):
         labels_act = QAction("Export Labels (NIfTI)…", self)
         labels_act.triggered.connect(self._on_export_labels)
         fm.addAction(labels_act)
+        report_act = QAction("Generate Report (PDF/HTML)…", self)
+        report_act.setShortcut(QKeySequence("Ctrl+R"))
+        report_act.triggered.connect(self._on_generate_report)
+        fm.addAction(report_act)
 
         fm.addSeparator()
         prefs_act = QAction("Preferences…", self)
@@ -813,6 +817,76 @@ class MainWindow(QMainWindow):
             prefs = dlg.values()
             self._panel.applyPreferences(prefs)
             self._sb.showMessage("Preferences applied.")
+
+    # ── Report ──────────────────────────────────────────────────────────────────
+
+    def _pixmap_b64(self, pixmap) -> str:
+        from PyQt6.QtCore import QByteArray, QBuffer, QIODevice
+        ba = QByteArray()
+        buf = QBuffer(ba)
+        buf.open(QIODevice.OpenModeFlag.WriteOnly)
+        pixmap.save(buf, "PNG")
+        return bytes(ba.toBase64()).decode("ascii")
+
+    def _on_generate_report(self) -> None:
+        from ..core.report import build_report_html
+        ref = self._ref_vol()
+        if not ref.is_loaded():
+            self._sb.showMessage("Load an image first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save report", "roisa_report.pdf",
+            "PDF (*.pdf);;HTML (*.html)")
+        if not path:
+            return
+
+        info = {
+            "Name":     os.path.basename(self._vol_names[0]),
+            "Dimensions": f"{ref.nx()} × {ref.ny()} × {ref.nz()} voxels",
+            "Spacing":  f"{tuple(round(s,3) for s in ref.spacing_xyz())} mm",
+            "Window":   f"{ref.vmin():.1f} … {ref.vmax():.1f}",
+        }
+        shots = [("Sagittal", self._viewer.grabSagittal()),
+                 ("Coronal",  self._viewer.grabCoronal()),
+                 ("Axial",    self._viewer.grabAxial()),
+                 ("3-D",      self._viewer.grabVtk())]
+        stats = [[s.label, s.voxel_count, f"{s.volume_mm3:.1f}",
+                  f"{s.mean_intensity:.2f}", f"{s.std_intensity:.2f}"]
+                 for s in ref.compute_all_stats()]
+        suv = [[d["label"], f"{d['volume_ml']:.3f}", f"{d['suv_mean']:.2f}",
+                f"{d['suv_max']:.2f}", f"{d['suv_peak']:.2f}", f"{d['tlg']:.2f}"]
+               for d in getattr(self, "_last_quant_rows", [])]
+        meas = self._viewer.measurements()
+
+        if path.lower().endswith(".pdf"):
+            self._render_report_pdf(path, info, shots, stats, suv, meas)
+        else:
+            imgs = [(cap, self._pixmap_b64(px)) for cap, px in shots]
+            html = build_report_html("ROISA Report", info, imgs, stats, suv, meas)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(html)
+        self._sb.showMessage(f"Report saved: {os.path.basename(path)}")
+
+    def _render_report_pdf(self, path, info, shots, stats, suv, meas) -> None:
+        from ..core.report import build_report_html
+        from PyQt6.QtGui import QTextDocument
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtPrintSupport import QPrinter
+        doc = QTextDocument()
+        # Register snapshots as resources referenced by name in the HTML
+        imgs = []
+        for i, (cap, px) in enumerate(shots):
+            name = f"shot{i}"
+            doc.addResource(QTextDocument.ResourceType.ImageResource,
+                            QUrl(name), px.toImage())
+            imgs.append((cap, name))
+        html = build_report_html("ROISA Report", info, imgs, stats, suv, meas,
+                                  embed=False)
+        doc.setHtml(html)
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+        printer.setOutputFileName(path)
+        doc.print(printer)
 
     def _on_refresh(self) -> None:
         self._viewer.refresh()

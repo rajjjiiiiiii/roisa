@@ -305,6 +305,15 @@ class OrthoViewer(QWidget):
         for sv in (self._sag_view, self._cor_view, self._axi_view):
             sv.clearMeasurements()
 
+    def measurements(self) -> list:
+        out = []
+        for name, sv in (("Sagittal", self._sag_view),
+                         ("Coronal", self._cor_view),
+                         ("Axial", self._axi_view)):
+            for m in sv.measurements():
+                out.append(f"{name}: {m}")
+        return out
+
     def resetAllZoom(self) -> None:
         for sv in (self._sag_view, self._cor_view, self._axi_view):
             sv.resetZoom()

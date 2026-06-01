@@ -155,6 +155,9 @@ class SliceView(QWidget):
         self._circle_start = self._circle_cur = None
         self.update()
 
+    def measurements(self) -> List[str]:
+        return [m[2] for m in self._finished]
+
     def resetZoom(self) -> None:
         self._zoom = 1.0;  self._pan_x = self._pan_y = 0.0;  self.update()
 
