@@ -91,6 +91,7 @@ class ToolPanel(QWidget):
     percentThresholdRequested = pyqtSignal(int, float, int)  # sourceLabel, pct, targetLabel
     roiRatioRequested         = pyqtSignal(int, int)         # labelA, labelB
     roiHistRequested          = pyqtSignal(int)              # label
+    kineticRequested          = pyqtSignal(int, int, str, float, int)  # target, input, model, dt, fitFrom
     # Segmentation/ROI tools
     interpolateRequested      = pyqtSignal(int, int)         # label, axis
     thresholdPreviewRequested = pyqtSignal(float, float, bool)  # lo, hi, on
@@ -228,7 +229,8 @@ class ToolPanel(QWidget):
                                   self._build_tac_group()), "SUV")
         tabs.addTab(_scroll_page(self._build_pct_threshold_group(),
                                   self._build_ratio_group(),
-                                  self._build_roi_hist_group()), "Analysis")
+                                  self._build_roi_hist_group(),
+                                  self._build_kinetics_group()), "Analysis")
         l.addWidget(tabs)
         return w
 
@@ -1111,6 +1113,41 @@ class ToolPanel(QWidget):
     def setRoiHist(self, counts, vmin: float, vmax: float, title: str) -> None:
         if hasattr(self, "_roi_hist"):
             self._roi_hist.set_data(counts, vmin, vmax, title)
+
+    def _build_kinetics_group(self) -> QGroupBox:
+        gb = QGroupBox("Kinetic Modeling  (Patlak / Logan)"); l = QVBoxLayout(gb)
+        l.addWidget(QLabel("Graphical analysis from the loaded frames."))
+        trow = QHBoxLayout(); trow.addWidget(QLabel("Tissue"))
+        self._kin_target = QComboBox(); self._kin_input = QComboBox()
+        for c in (self._kin_target, self._kin_input):
+            for i in range(1, 11): c.addItem(f"Label {i}", i)
+        self._kin_input.setCurrentIndex(1)
+        trow.addWidget(self._kin_target, 1); trow.addWidget(QLabel("Input"))
+        trow.addWidget(self._kin_input, 1); l.addLayout(trow)
+        mrow = QHBoxLayout(); mrow.addWidget(QLabel("Model"))
+        self._kin_model = QComboBox(); self._kin_model.addItems(["Patlak", "Logan"])
+        mrow.addWidget(self._kin_model, 1)
+        mrow.addWidget(QLabel("Δt(min)"))
+        self._kin_dt = _dbl(0.01, 120, 1.0, 0.5, 2); mrow.addWidget(self._kin_dt)
+        l.addLayout(mrow)
+        frow = QHBoxLayout(); frow.addWidget(QLabel("Fit from frame"))
+        self._kin_fit = _int(0, 200, 0); frow.addWidget(self._kin_fit)
+        btn = QPushButton("Compute"); frow.addWidget(btn); l.addLayout(frow)
+        self._kin_result = QLabel("—")
+        self._kin_result.setStyleSheet("color:#aef;font-size:11px;")
+        self._kin_result.setWordWrap(True); l.addWidget(self._kin_result)
+        self._kin_plot = TacWidget(); l.addWidget(self._kin_plot)
+        btn.clicked.connect(lambda: self.kineticRequested.emit(
+            self._kin_target.currentData(), self._kin_input.currentData(),
+            self._kin_model.currentText().lower(), self._kin_dt.value(),
+            self._kin_fit.value()))
+        return gb
+
+    def setKineticResult(self, text: str, y_values) -> None:
+        if hasattr(self, "_kin_result"):
+            self._kin_result.setText(text)
+        if hasattr(self, "_kin_plot"):
+            self._kin_plot.set_values(y_values, "y (linearized)")
 
     def _build_measure_group(self) -> QGroupBox:
         gb = QGroupBox("Measurement Tool"); l = QVBoxLayout(gb)

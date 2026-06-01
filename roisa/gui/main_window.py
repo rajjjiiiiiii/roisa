@@ -114,6 +114,7 @@ class MainWindow(QMainWindow):
         self._panel.roiHistRequested.connect(self._on_roi_hist)
         self._panel.interpolateRequested.connect(self._on_interpolate)
         self._panel.thresholdPreviewRequested.connect(self._on_threshold_preview)
+        self._panel.kineticRequested.connect(self._on_kinetic)
         self._last_quant_rows = []
 
         # ── Wire viewer / panel ────────────────────────────────────────────────
@@ -607,6 +608,36 @@ class MainWindow(QMainWindow):
         counts, vmin, vmax = res
         self._panel.setRoiHist(counts, vmin, vmax, f"Label {label} histogram")
         self._sb.showMessage(f"Histogram of label {label} ({int(counts.sum())} voxels).")
+
+    def _on_kinetic(self, target: int, inp: int, model: str,
+                    dt: float, fit_from: int) -> None:
+        from ..core.suv import time_activity_curve
+        from ..core.kinetics import patlak, logan
+        ref = self._ref_vol()
+        if not ref.is_loaded() or ref.mask is None:
+            return
+        frames = [self._volumes[i].resample_array_to(ref)
+                  for i in range(1, len(self._volumes))]
+        if len(frames) < 3:
+            self._panel.setKineticResult(
+                "Need ≥3 input frames (load the dynamic series as inputs).", [])
+            return
+        tissue = time_activity_curve(frames, ref.mask, target, 1.0)
+        blood  = time_activity_curve(frames, ref.mask, inp, 1.0)
+        if not tissue or not blood:
+            self._panel.setKineticResult(
+                f"Label {target} or {inp} not present in the mask.", [])
+            return
+        res = (patlak if model == "patlak" else logan)(tissue, blood, dt, fit_from)
+        if res is None:
+            self._panel.setKineticResult("Fit failed (too few valid points).", [])
+            return
+        self._panel.setKineticResult(
+            f"{res['model']}:  {res['param']} = {res['slope']:.4g}   "
+            f"(intercept {res['intercept']:.3g}, fit from frame {fit_from})",
+            res["y"])
+        self._sb.showMessage(
+            f"{res['model']} {res['param']} = {res['slope']:.4g}")
 
     # ── Segmentation/ROI tool handlers ──────────────────────────────────────────
 
