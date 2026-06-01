@@ -63,6 +63,9 @@ class SliceView(QWidget):
         self._slab        = 0
         self._show_colorbar = False
 
+        # Live threshold preview (boolean nz,ny,nx) drawn as a tint
+        self._preview_vol = None
+
         # Crosshair (voxel coords on the in-plane axes)
         self._ch = -1   # horizontal-axis voxel index
         self._cv = -1   # vertical-axis voxel index
@@ -117,6 +120,9 @@ class SliceView(QWidget):
 
     def setShowColorbar(self, on: bool) -> None:
         self._show_colorbar = on;  self.update()
+
+    def setPreviewVolume(self, vol) -> None:
+        self._preview_vol = vol;  self.update()
 
     def setOverlays(self, overlays: List[dict]) -> None:
         """Set the fusion overlay layers (each on the REF grid)."""
@@ -311,6 +317,19 @@ class SliceView(QWidget):
             rgb[px, 0] = np.clip(rgb[px, 0] * (1 - alpha) + r * alpha, 0, 255)
             rgb[px, 1] = np.clip(rgb[px, 1] * (1 - alpha) + g * alpha, 0, 255)
             rgb[px, 2] = np.clip(rgb[px, 2] * (1 - alpha) + b * alpha, 0, 255)
+
+        # ── Live threshold preview tint (cyan) ───────────────────────────────
+        if self._preview_vol is not None:
+            try:
+                pv = self._overlay_slice(self._preview_vol)
+                if pv.shape == rgb.shape[:2]:
+                    px = pv.astype(bool)
+                    if px.any():
+                        rgb[px, 0] = np.clip(rgb[px, 0] * 0.4, 0, 255)
+                        rgb[px, 1] = np.clip(rgb[px, 1] * 0.4 + 200 * 0.6, 0, 255)
+                        rgb[px, 2] = np.clip(rgb[px, 2] * 0.4 + 255 * 0.6, 0, 255)
+            except (IndexError, ValueError):
+                pass
 
         h, w = rgb.shape[:2]
         rgba = np.empty((h, w, 4), np.uint8)

@@ -91,6 +91,9 @@ class ToolPanel(QWidget):
     percentThresholdRequested = pyqtSignal(int, float, int)  # sourceLabel, pct, targetLabel
     roiRatioRequested         = pyqtSignal(int, int)         # labelA, labelB
     roiHistRequested          = pyqtSignal(int)              # label
+    # Segmentation/ROI tools
+    interpolateRequested      = pyqtSignal(int, int)         # label, axis
+    thresholdPreviewRequested = pyqtSignal(float, float, bool)  # lo, hi, on
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -247,6 +250,10 @@ class ToolPanel(QWidget):
         self._brush_shape = QComboBox()
         self._brush_shape.addItems(["Sphere", "Cylinder", "Cube"]); l.addWidget(self._brush_shape)
         self._two_d_cb = QCheckBox("2D only (current slice)"); l.addWidget(self._two_d_cb)
+        self._smart_cb = QCheckBox("Smart brush (edge-aware)"); l.addWidget(self._smart_cb)
+        srow = QHBoxLayout(); srow.addWidget(QLabel("Tolerance"))
+        self._smart_tol = _dbl(0, 1e6, 100, 10, 1); srow.addWidget(self._smart_tol)
+        l.addLayout(srow)
         return gb
 
     def _build_nav_group(self) -> QGroupBox:
@@ -502,7 +509,16 @@ class ToolPanel(QWidget):
         self._t_hi = _dbl(-5000,50000,1000,10,1); self._t_hi.setPrefix("Upper: ")
         self._t_slice_only = QCheckBox("Slice only")
         self._t_slice_axis = QComboBox(); self._t_slice_axis.addItems(["Axial(Z)","Coronal(Y)","Sagittal(X)"])
-        for w in (self._t_lo, self._t_hi, self._t_slice_only, self._t_slice_axis): pl.addWidget(w)
+        self._t_preview = QCheckBox("Live preview (cyan)")
+        for w in (self._t_lo, self._t_hi, self._t_slice_only, self._t_slice_axis,
+                  self._t_preview): pl.addWidget(w)
+
+        def _emit_preview(*_):
+            self.thresholdPreviewRequested.emit(
+                self._t_lo.value(), self._t_hi.value(), self._t_preview.isChecked())
+        self._t_preview.toggled.connect(lambda *_: _emit_preview())
+        self._t_lo.valueChanged.connect(lambda *_: _emit_preview() if self._t_preview.isChecked() else None)
+        self._t_hi.valueChanged.connect(lambda *_: _emit_preview() if self._t_preview.isChecked() else None)
         self._seg_stack.addWidget(p)
         # p1: Region Grow
         p = QWidget(); pl = QVBoxLayout(p)
@@ -630,6 +646,16 @@ class ToolPanel(QWidget):
         self._prop_fwd = QPushButton("▶"); self._prop_fwd.setFixedWidth(30)
         prow.addWidget(self._prop_bwd); prow.addWidget(self._prop_fwd)
         l.addLayout(prow)
+        # Slice interpolation
+        irow = QHBoxLayout(); irow.addWidget(QLabel("Interpolate:"))
+        self._interp_axis = QComboBox(); self._interp_axis.addItems(["X(sag)","Y(cor)","Z(axi)"])
+        self._interp_axis.setCurrentIndex(2)
+        irow.addWidget(self._interp_axis)
+        self._interp_btn = QPushButton("Fill between slices")
+        irow.addWidget(self._interp_btn); l.addLayout(irow)
+        self._interp_btn.clicked.connect(lambda: self.interpolateRequested.emit(
+            self.activeLabel(), self._interp_axis.currentIndex()))
+
         self._surf_btn = QPushButton("Update 3D Surface")
         self._surf_btn.setStyleSheet("background:#226;color:white;"); l.addWidget(self._surf_btn)
         self._centroid_btn.clicked.connect(self._on_snap_centroid)
@@ -1142,6 +1168,12 @@ class ToolPanel(QWidget):
 
     def twoDOnly(self) -> bool:
         return self._two_d_cb.isChecked() if hasattr(self, '_two_d_cb') else False
+
+    def smartBrush(self) -> bool:
+        return self._smart_cb.isChecked() if hasattr(self, '_smart_cb') else False
+
+    def brushTolerance(self) -> float:
+        return self._smart_tol.value() if hasattr(self, '_smart_tol') else 0.0
 
     def refreshStats(self) -> None:
         if not self._vol or not hasattr(self, '_stats_tbl'):

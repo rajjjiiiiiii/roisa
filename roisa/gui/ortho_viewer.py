@@ -293,6 +293,10 @@ class OrthoViewer(QWidget):
         for sv in (self._sag_view, self._cor_view, self._axi_view):
             sv.setShowColorbar(on)
 
+    def setPreviewVolume(self, vol) -> None:
+        for sv in (self._sag_view, self._cor_view, self._axi_view):
+            sv.setPreviewVolume(vol)
+
     def setMeasureMode(self, mode: int) -> None:
         for sv in (self._sag_view, self._cor_view, self._axi_view):
             sv.setMeasureMode(mode)

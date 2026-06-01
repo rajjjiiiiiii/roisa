@@ -269,8 +269,13 @@ class ROIVolume:
     def paint_brush(self, cx: int, cy: int, cz: int,
                     radius: int, shape: int,
                     two_d: bool, view_axis: int,
-                    label: int) -> None:
-        """Write `label` into all mask voxels covered by the brush."""
+                    label: int, smart: bool = False, tol: float = 0.0) -> None:
+        """Write `label` into all mask voxels covered by the brush.
+
+        When `smart` is set, only voxels whose intensity is within `tol` of the
+        brush-centre intensity are painted — an edge-aware brush that stops at
+        boundaries.
+        """
         if not self._loaded:
             return
         nz, ny, nx = self._mask.shape
@@ -293,8 +298,62 @@ class ROIVolume:
         else:             # cube
             inside = (np.abs(dx) <= r) & (np.abs(dy) <= r) & (np.abs(dz) <= r)
 
+        if smart and label != 0:
+            try:
+                ref = float(self._arr[cz, cy, cx])
+                patch = self._arr[zlo:zhi, ylo:yhi, xlo:xhi]
+                inside = inside & (np.abs(patch - ref) <= tol)
+            except IndexError:
+                pass
+
         self._mask[zz[inside], yy[inside], xx[inside]] = np.int16(label)
         self._notify_change()
+
+    def interpolate_label(self, label: int, axis: int) -> int:
+        """Fill `label` on empty slices between drawn slices along `axis`.
+
+        Uses signed-distance-field blending of the bounding contours — the
+        standard morphological slice interpolation.  Returns slices filled.
+        """
+        if not self._loaded:
+            return 0
+        from scipy.ndimage import distance_transform_edt
+        n = {0: self.nx(), 1: self.ny(), 2: self.nz()}[axis]
+
+        def get(i):
+            if   axis == 2: return self._mask[i, :, :] == label
+            elif axis == 1: return self._mask[:, i, :] == label
+            else:           return self._mask[:, :, i] == label
+
+        def put(i, binary):
+            if   axis == 2: self._mask[i, :, :][binary] = label
+            elif axis == 1: self._mask[:, i, :][binary] = label
+            else:           self._mask[:, :, i][binary] = label
+
+        def sdf(b):
+            b = b.astype(bool)
+            if not b.any():
+                return None
+            return distance_transform_edt(~b) - distance_transform_edt(b)
+
+        present = [i for i in range(n) if get(i).any()]
+        if len(present) < 2:
+            return 0
+        filled = 0
+        for a, b in zip(present[:-1], present[1:]):
+            if b - a <= 1:
+                continue
+            sa, sb = sdf(get(a)), sdf(get(b))
+            if sa is None or sb is None:
+                continue
+            for m in range(a + 1, b):
+                t = (m - a) / (b - a)
+                newb = ((1 - t) * sa + t * sb) < 0
+                if newb.any():
+                    put(m, newb)
+                    filled += 1
+        self._notify_change()
+        return filled
 
     def clear_label(self, label: int) -> None:
         if not self._loaded:

@@ -112,6 +112,8 @@ class MainWindow(QMainWindow):
         self._panel.percentThresholdRequested.connect(self._on_percent_threshold)
         self._panel.roiRatioRequested.connect(self._on_roi_ratio)
         self._panel.roiHistRequested.connect(self._on_roi_hist)
+        self._panel.interpolateRequested.connect(self._on_interpolate)
+        self._panel.thresholdPreviewRequested.connect(self._on_threshold_preview)
         self._last_quant_rows = []
 
         # ── Wire viewer / panel ────────────────────────────────────────────────
@@ -589,6 +591,32 @@ class MainWindow(QMainWindow):
         self._panel.setRoiHist(counts, vmin, vmax, f"Label {label} histogram")
         self._sb.showMessage(f"Histogram of label {label} ({int(counts.sum())} voxels).")
 
+    # ── Segmentation/ROI tool handlers ──────────────────────────────────────────
+
+    def _on_interpolate(self, label: int, axis: int) -> None:
+        ref = self._ref_vol()
+        if not ref.is_loaded():
+            return
+        ref.push_undo()
+        filled = ref.interpolate_label(label, axis)
+        self._rebuild_fusion()
+        self._panel.refreshStats()
+        self._sb.showMessage(
+            f"Interpolated label {label}: filled {filled} slice(s)."
+            if filled else
+            f"Interpolate: need label {label} on ≥2 separated slices along that axis.")
+
+    def _on_threshold_preview(self, lo: float, hi: float, on: bool) -> None:
+        ref = self._ref_vol()
+        if not on or not ref.is_loaded() or ref.arr is None:
+            self._viewer.setPreviewVolume(None)
+            self._viewer.refresh()
+            return
+        import numpy as np
+        preview = (ref.arr >= lo) & (ref.arr <= hi)
+        self._viewer.setPreviewVolume(preview)
+        self._viewer.refresh()
+
     # ── Menu ──────────────────────────────────────────────────────────────────
 
     def _build_menus(self) -> None:
@@ -702,13 +730,17 @@ class MainWindow(QMainWindow):
     def _do_paint(self, x: int, y: int, z: int, mode: str) -> None:
         """Always paints on the reference volume regardless of active view."""
         label = self._panel.activeLabel() if mode == "paint" else 0
+        # Smart brush only gates painting (not erasing)
+        smart = self._panel.smartBrush() and mode == "paint"
         self._ref_vol().paint_brush(
             cx=x, cy=y, cz=z,
             radius=self._panel.brushRadius(),
             shape=self._panel.brushShape(),
             two_d=self._panel.twoDOnly(),
             view_axis=self._viewer.activeAxis(),
-            label=label)
+            label=label,
+            smart=smart,
+            tol=self._panel.brushTolerance())
 
     # ── Stylesheet ────────────────────────────────────────────────────────────
 
