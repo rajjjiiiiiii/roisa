@@ -82,6 +82,7 @@ class ToolPanel(QWidget):
     registerRequested        = pyqtSignal(int, str, int)     # movingIdx, mode, iters
     manualTransformRequested = pyqtSignal(int, float, float, float, float, float, float)
     resetRegistrationRequested = pyqtSignal(int)
+    flipRequested            = pyqtSignal(int, int)         # movingIdx, axis(0=X/LR,1=Y/AP,2=Z/HF)
     saveTransformRequested   = pyqtSignal(int)
     loadTransformRequested   = pyqtSignal(int)
     # Quantification operator (activityIdx indexes loaded images: 0=REF, 1+=inputs)
@@ -839,6 +840,29 @@ class ToolPanel(QWidget):
         self._man_reset = QPushButton("Reset")
         brow.addWidget(self._man_apply); brow.addWidget(self._man_reset)
         l.addLayout(brow)
+
+        # Orientation flips for the selected moving image
+        l.addWidget(QLabel("Flip moving image:"))
+        frow = QHBoxLayout()
+        self._flip_lr = QPushButton("L / R")
+        self._flip_ap = QPushButton("A / P")
+        self._flip_hf = QPushButton("H / F")
+        self._flip_lr.setToolTip("Mirror left ↔ right (X axis)")
+        self._flip_ap.setToolTip("Mirror anterior ↔ posterior (Y axis)")
+        self._flip_hf.setToolTip("Mirror head ↔ feet (Z axis)")
+        for b in (self._flip_lr, self._flip_ap, self._flip_hf):
+            frow.addWidget(b)
+        l.addLayout(frow)
+
+        def _flip(axis: int):
+            mv = self._reg_moving.currentData() if self._reg_moving else None
+            if mv is None:
+                self._reg_status.setText("Select a moving input first.")
+                return
+            self.flipRequested.emit(int(mv), axis)
+        self._flip_lr.clicked.connect(lambda: _flip(0))
+        self._flip_ap.clicked.connect(lambda: _flip(1))
+        self._flip_hf.clicked.connect(lambda: _flip(2))
 
         trow = QHBoxLayout()
         self._tf_save = QPushButton("Save Transform…")

@@ -628,6 +628,36 @@ class ROIVolume:
             print(f"[load_transform] {exc}")
             return False
 
+    def flip_axis(self, axis: int) -> bool:
+        """Mirror the moving image about its centre along a physical axis.
+
+        axis 0 = X (L/R)  ·  1 = Y (A/P)  ·  2 = Z (H/F), assuming the usual
+        LPS patient orientation. Each call toggles that flip; Reset restores
+        the original image. Used to fix mis-oriented inputs before/after
+        registration.
+        """
+        if not self._loaded:
+            return False
+        try:
+            if self._orig_sitk is None:
+                self._orig_sitk = self._sitk_img
+            cur = sitk.Cast(self._sitk_img, sitk.sitkFloat32)
+            sz = cur.GetSize()
+            center = cur.TransformContinuousIndexToPhysicalPoint(
+                [(s - 1) / 2.0 for s in sz])
+            aff = sitk.AffineTransform(3)
+            m = [1., 0., 0., 0., 1., 0., 0., 0., 1.]
+            m[axis * 3 + axis] = -1.0          # reflection along chosen axis
+            aff.SetMatrix(m)
+            aff.SetCenter(center)
+            resampled = sitk.Resample(cur, cur, aff,
+                                      sitk.sitkLinear, 0., sitk.sitkFloat32)
+            self._apply_resampled(resampled)
+            return True
+        except Exception as exc:
+            print(f"[flip_axis] {exc}")
+            return False
+
     def reset_registration(self) -> bool:
         """Restore the original (pre-registration) image."""
         if self._orig_sitk is None:

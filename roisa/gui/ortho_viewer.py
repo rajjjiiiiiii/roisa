@@ -82,6 +82,7 @@ class OrthoViewer(QWidget):
             ("3-up", "Three slices side-by-side (Sag | Cor | Axi)"),
             ("Axi",  "Axial view only"),
             ("3D",   "3-D VTK view only"),
+            ("1×4",  "All four panels in a row (Sag | Cor | Axi | 3D)"),
         ]
         self._preset_btns: list[QPushButton] = []
         for i, (lbl, tip) in enumerate(PRESETS):
@@ -166,8 +167,15 @@ class OrthoViewer(QWidget):
             root = QSplitter(Qt.Orientation.Horizontal)
             root.addWidget(self._axi_view)
             _style_splitter(root)
-        else:   # preset == 4
+        elif preset == 4:
             root = QSplitter(Qt.Orientation.Horizontal)
+            root.addWidget(self._vtk_view)
+            _style_splitter(root)
+        else:   # preset == 5 — 1×4 row: Sag | Cor | Axi | 3D
+            root = QSplitter(Qt.Orientation.Horizontal)
+            root.addWidget(self._sag_view)
+            root.addWidget(self._cor_view)
+            root.addWidget(self._axi_view)
             root.addWidget(self._vtk_view)
             _style_splitter(root)
 

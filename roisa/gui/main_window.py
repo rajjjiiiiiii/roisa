@@ -111,6 +111,7 @@ class MainWindow(QMainWindow):
         self._panel.registerRequested.connect(self._on_register)
         self._panel.manualTransformRequested.connect(self._on_manual_transform)
         self._panel.resetRegistrationRequested.connect(self._on_reset_registration)
+        self._panel.flipRequested.connect(self._on_flip)
         self._panel.saveTransformRequested.connect(self._on_save_transform)
         self._panel.loadTransformRequested.connect(self._on_load_transform)
 
@@ -467,6 +468,16 @@ class MainWindow(QMainWindow):
         else:
             self._panel.setRegStatus(f"IN{moving_idx} has no registration to reset.")
         self._rebuild_fusion()
+
+    def _on_flip(self, moving_idx: int, axis: int) -> None:
+        if moving_idx < 1 or moving_idx >= len(self._volumes):
+            return
+        name = {0: "L/R", 1: "A/P", 2: "H/F"}.get(axis, "?")
+        if self._volumes[moving_idx].flip_axis(axis):
+            self._panel.setRegStatus(f"IN{moving_idx} flipped {name}.")
+            self._rebuild_fusion()
+        else:
+            self._panel.setRegStatus(f"Could not flip IN{moving_idx}.")
 
     def _on_save_transform(self, moving_idx: int) -> None:
         if moving_idx < 1 or moving_idx >= len(self._volumes):
@@ -921,7 +932,8 @@ class MainWindow(QMainWindow):
 
         vm = mb.addMenu("&View")
         layout_m = vm.addMenu("Layout Preset")
-        for i, name in enumerate(["2×2", "1+3", "3-up", "Axial only", "3D only"]):
+        for i, name in enumerate(["2×2", "1+3", "3-up", "Axial only", "3D only",
+                                  "1×4 (row)"]):
             act = QAction(name, self)
             act.setShortcut(QKeySequence(f"Ctrl+{i+1}"))
             act.triggered.connect(lambda _chk, idx=i: self._viewer.setLayoutPreset(idx))
