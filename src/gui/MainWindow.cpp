@@ -687,6 +687,9 @@ void MainWindow::selectTool(const QString& key)
 
 void MainWindow::onPanelToolMode(const QString& mode)
 {
+    // Reflect any tool/module change (keyboard, ROI tab, operator dropdown) on
+    // the rail so the active-tool state never lies. "" → Navigation /
+    // Registration / Quantification (no drawing tool).
     m_viewer->setPolygonMode(mode == "polygon");
     if (m_toolSync) return;
     QString key;
@@ -694,11 +697,11 @@ void MainWindow::onPanelToolMode(const QString& mode)
     else if (mode == "erase")   key = "eraser";
     else if (mode == "segment") key = "segment";
     else if (mode == "polygon") key = "polygon";
-    if (!key.isEmpty()) {
-        m_activeTool = key;
-        if (auto* a = m_toolActs.value(key)) { if (!a->isChecked()) a->setChecked(true); }
-        updateStatusHeader();
-    }
+    else if (mode == "measure") key = "measure";
+    else                        key = "navigate";
+    m_activeTool = key;
+    if (auto* a = m_toolActs.value(key)) { if (!a->isChecked()) a->setChecked(true); }
+    updateStatusHeader();
 }
 
 void MainWindow::updateStatusHeader()
@@ -1025,10 +1028,11 @@ void MainWindow::brushFootprint(int cx, int cy, int cz,
 void MainWindow::onSeedOrPaint(int x, int y, int z)
 {
     if (!refVol() || !refVol()->isLoaded()) return;
-    // Only brush/eraser tools draw; Navigate / Measure / Segment / Polygon use
-    // other interactions (the segment seed is handled via ToolPanel::onSeedSet).
-    if (m_activeTool != "brush" && m_activeTool != "eraser") return;
-    QString mode = (m_activeTool == "eraser") ? "erase" : "paint";
+    // Gate on toolMode() — it is operator-aware (returns "" for Navigation /
+    // Registration / Quantification, "measure" for Measure), so painting is
+    // disabled outside the ROI module even if a paint tool was last active.
+    QString mode = m_toolPanel->toolMode();
+    if (mode != "paint" && mode != "erase") return;
 
     int16_t label = (mode=="paint")
                     ? static_cast<int16_t>(m_toolPanel->activeLabel())
