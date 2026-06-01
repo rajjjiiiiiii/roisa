@@ -139,6 +139,17 @@ class MainWindow(QMainWindow):
 
         self._build_menus()
         self._apply_stylesheet()
+        self.setAcceptDrops(True)
+
+        # Indeterminate progress indicator for background operations
+        from PyQt6.QtWidgets import QProgressBar
+        self._progress = QProgressBar(self)
+        self._progress.setMaximumWidth(140)
+        self._progress.setRange(0, 0)       # indeterminate
+        self._progress.setVisible(False)
+        self._progress.setTextVisible(False)
+        self._sb.addPermanentWidget(self._progress)
+        self._panel.busyChanged.connect(self._on_busy_changed)
 
     # ── Multi-image helpers ────────────────────────────────────────────────────
 
@@ -252,6 +263,9 @@ class MainWindow(QMainWindow):
         self._rebuild_fusion()
 
     def _remove_image(self, idx: int) -> None:
+        if self._busy():
+            self._sb.showMessage("Busy — wait for the current operation to finish.")
+            return
         if idx < 0 or idx >= len(self._volumes):
             return
         if idx == 0 and len(self._volumes) == 1:
@@ -274,6 +288,9 @@ class MainWindow(QMainWindow):
 
     def _on_add_image(self) -> None:
         """Load an additional input image as a fusion overlay."""
+        if self._busy():
+            self._sb.showMessage("Busy — wait for the current operation to finish.")
+            return
         path = QFileDialog.getExistingDirectory(self, "Add Input DICOM Folder")
         if not path:
             path, _ = QFileDialog.getOpenFileName(
@@ -633,6 +650,15 @@ class MainWindow(QMainWindow):
         shot_act.setShortcut(QKeySequence("Ctrl+Shift+S"))
         shot_act.triggered.connect(self._on_screenshot)
         fm.addAction(shot_act)
+        labels_act = QAction("Export Labels (NIfTI)…", self)
+        labels_act.triggered.connect(self._on_export_labels)
+        fm.addAction(labels_act)
+
+        fm.addSeparator()
+        prefs_act = QAction("Preferences…", self)
+        prefs_act.setShortcut(QKeySequence("Ctrl+,"))
+        prefs_act.triggered.connect(self._on_settings)
+        fm.addAction(prefs_act)
 
         fm.addSeparator()
         quit_act = QAction("Quit", self)
@@ -663,30 +689,28 @@ class MainWindow(QMainWindow):
 
     # ── Handlers ──────────────────────────────────────────────────────────────
 
-    def _on_open(self) -> None:
-        """Load a new reference image — replaces all existing volumes."""
-        path = QFileDialog.getExistingDirectory(self, "Select DICOM folder")
+    def _busy(self) -> bool:
+        """True while a heavy background op or segmentation is running."""
+        return getattr(self, "_bg_busy", False) or self._panel.is_seg_running()
+
+    def _open_path(self, path: str) -> None:
+        """Load `path` as the new reference image — replaces all volumes."""
         if not path:
-            path, _ = QFileDialog.getOpenFileName(
-                self, "Open NIfTI / image",
-                "", "Images (*.nii *.nii.gz *.mha *.mhd *.nrrd);;All files (*)")
-        if not path:
+            return
+        if self._busy():
+            self._sb.showMessage("Busy — wait for the current operation to finish.")
             return
         self._sb.showMessage(f"Loading {path}…")
         QApplication.processEvents()
-
         vol = ROIVolume()
         if not vol.load(path):
             self._sb.showMessage("Load failed — see console.")
             QMessageBox.warning(self, "Load error", f"Could not load:\n{path}")
             return
-
-        # Replace everything — this becomes the new reference
         self._volumes    = [vol]
         self._vol_visible = [True]
         self._vol_names   = [path]
         self._active_vol  = 0
-
         self._panel.setVolume(vol)
         self._viewer.setVolume(vol)
         self._viewer.setBaseVisible(True)
@@ -698,6 +722,97 @@ class MainWindow(QMainWindow):
             f"Loaded REF: {os.path.basename(path)}  —  "
             f"{vol.nx()}×{vol.ny()}×{vol.nz()} voxels, "
             f"spacing {vol.spacing_xyz()}")
+
+    def _on_open(self) -> None:
+        """Load a new reference image — replaces all existing volumes."""
+        path = QFileDialog.getExistingDirectory(self, "Select DICOM folder")
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Open NIfTI / image",
+                "", "Images (*.nii *.nii.gz *.mha *.mhd *.nrrd);;All files (*)")
+        self._open_path(path)
+
+    # ── Drag-and-drop loading ───────────────────────────────────────────────────
+
+    def dragEnterEvent(self, e) -> None:
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+
+    def dropEvent(self, e) -> None:
+        for url in e.mimeData().urls():
+            p = url.toLocalFile()
+            if p:
+                self._open_path(p)
+                break
+
+    # ── Background progress indicator ───────────────────────────────────────────
+
+    def _on_busy_changed(self, busy: bool) -> None:
+        if hasattr(self, "_progress"):
+            self._progress.setVisible(busy)
+
+    # ── Keyboard shortcuts ──────────────────────────────────────────────────────
+
+    def keyPressEvent(self, e) -> None:
+        k = e.key()
+        if Qt.Key.Key_1 <= k <= Qt.Key.Key_9:
+            self._panel.setActiveLabel(k - Qt.Key.Key_0)
+            self._sb.showMessage(f"Active label: {k - Qt.Key.Key_0}")
+        elif k == Qt.Key.Key_P:
+            self._panel.setToolByName("paint");   self._sb.showMessage("Paint")
+        elif k == Qt.Key.Key_E:
+            self._panel.setToolByName("erase");   self._sb.showMessage("Erase")
+        elif k == Qt.Key.Key_S:
+            self._panel.setToolByName("segment"); self._sb.showMessage("Segment")
+        elif k == Qt.Key.Key_BracketLeft:
+            self._panel.bumpBrush(-1)
+        elif k == Qt.Key.Key_BracketRight:
+            self._panel.bumpBrush(+1)
+        elif k == Qt.Key.Key_Z:
+            if self._ref_vol().is_loaded():
+                self._ref_vol().undo()
+                self._rebuild_fusion()
+                self._panel.refreshStats()
+        else:
+            super().keyPressEvent(e)
+
+    # ── Batch export of all labels ──────────────────────────────────────────────
+
+    def _on_export_labels(self) -> None:
+        ref = self._ref_vol()
+        if not ref.is_loaded() or ref.mask is None:
+            self._sb.showMessage("No mask to export.")
+            return
+        import numpy as np
+        labels = [int(l) for l in np.unique(ref.mask) if l != 0]
+        if not labels:
+            self._sb.showMessage("Mask is empty — nothing to export.")
+            return
+        out_dir = QFileDialog.getExistingDirectory(self, "Export labels to folder")
+        if not out_dir:
+            return
+        import SimpleITK as sitk
+        written = 0
+        for lbl in labels:
+            binary = (ref.mask == lbl).astype(np.uint8)
+            img = sitk.GetImageFromArray(binary)
+            img.CopyInformation(ref.sitk_img)
+            try:
+                sitk.WriteImage(img, os.path.join(out_dir, f"label_{lbl}.nii.gz"))
+                written += 1
+            except Exception as exc:
+                print(f"[export_labels] {exc}")
+        self._sb.showMessage(f"Exported {written} label mask(s) → {out_dir}")
+
+    # ── Settings / preferences ──────────────────────────────────────────────────
+
+    def _on_settings(self) -> None:
+        from .settings_dialog import SettingsDialog
+        dlg = SettingsDialog(self)
+        if dlg.exec():
+            prefs = dlg.values()
+            self._panel.applyPreferences(prefs)
+            self._sb.showMessage("Preferences applied.")
 
     def _on_refresh(self) -> None:
         self._viewer.refresh()

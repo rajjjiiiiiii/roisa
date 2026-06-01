@@ -94,6 +94,7 @@ class ToolPanel(QWidget):
     # Segmentation/ROI tools
     interpolateRequested      = pyqtSignal(int, int)         # label, axis
     thresholdPreviewRequested = pyqtSignal(float, float, bool)  # lo, hi, on
+    busyChanged               = pyqtSignal(bool)             # heavy op running?
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -874,10 +875,40 @@ class ToolPanel(QWidget):
             btn = getattr(self, attr, None)
             if btn is not None:
                 btn.setEnabled(not busy)
+        self.busyChanged.emit(busy)
 
     def is_seg_running(self) -> bool:
         th = getattr(self, "_seg_thread", None)
         return th is not None and th.isRunning()
+
+    # ── Keyboard / preference helpers ───────────────────────────────────────────
+
+    def setActiveLabel(self, label: int) -> None:
+        if hasattr(self, "_label_combo"):
+            i = self._label_combo.findData(label)
+            if i >= 0:
+                self._label_combo.setCurrentIndex(i)
+
+    def setToolByName(self, name: str) -> None:
+        if not hasattr(self, "_tool_combo"):
+            return
+        idx = {"paint": 0, "erase": 1, "segment": 2}.get(name.lower())
+        if idx is not None:
+            if hasattr(self, "_op_combo"):
+                self._op_combo.setCurrentIndex(1)   # ROI operator
+            self._tool_combo.setCurrentIndex(idx)
+
+    def bumpBrush(self, delta: int) -> None:
+        if hasattr(self, "_brush_radius"):
+            self._brush_radius.setValue(self._brush_radius.value() + delta)
+
+    def applyPreferences(self, prefs: dict) -> None:
+        if hasattr(self, "_brush_radius") and "brushRadius" in prefs:
+            self._brush_radius.setValue(int(prefs["brushRadius"]))
+        if hasattr(self, "_cm_combo") and "colormap" in prefs:
+            self._cm_combo.setCurrentIndex(int(prefs["colormap"]))
+        if hasattr(self, "_suv_half") and "halfLifeS" in prefs:
+            self._suv_half.setValue(float(prefs["halfLifeS"]))
 
     # ── Quantification groups ───────────────────────────────────────────────────
 
@@ -1326,6 +1357,7 @@ class ToolPanel(QWidget):
             self._set_status("Unknown method."); return
 
         self._apply_seg_btn.setEnabled(False)
+        self.busyChanged.emit(True)
         self._set_status("Running…")
 
         self._seg_thread = QThread()
@@ -1340,11 +1372,13 @@ class ToolPanel(QWidget):
 
     def _on_seg_done(self, _) -> None:
         self._apply_seg_btn.setEnabled(True)
+        self.busyChanged.emit(False)
         self._set_status("Done.")
         self.refreshRequested.emit()
 
     def _on_seg_error(self, msg: str) -> None:
         self._apply_seg_btn.setEnabled(True)
+        self.busyChanged.emit(False)
         self._set_status(f"Error: {msg}")
         QMessageBox.critical(self, "Segmentation error", msg)
 
