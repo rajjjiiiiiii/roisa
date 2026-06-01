@@ -4,6 +4,7 @@
 //               and measurement overlay (ruler, angle, circle area).
 
 #include <QWidget>
+#include <QStringList>
 #include <array>
 #include <cstdint>
 #include <map>
@@ -71,6 +72,15 @@ public:
     void setMeasureMode(MeasureMode mode);
     void clearMeasurements();
     const std::vector<Measurement>& measurementsForSlice(int idx) const;
+
+    /// All completed measurement value strings across slices.
+    QStringList measurements() const {
+        QStringList out;
+        for (const auto& kv : m_measurements)
+            for (const auto& m : kv.second)
+                if (m.complete) out << m.valueStr;
+        return out;
+    }
 
 signals:
     void sliceClicked (int x, int y, int z);

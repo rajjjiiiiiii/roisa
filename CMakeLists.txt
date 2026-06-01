@@ -90,14 +90,14 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 QUIET COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
+find_package(Qt6 QUIET COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets PrintSupport)
 if(Qt6_FOUND)
     message(STATUS "Using Qt ${Qt6_VERSION}")
-    set(QT_LIBS Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets)
+    set(QT_LIBS Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets Qt6::PrintSupport)
 else()
-    find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets)
+    find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets PrintSupport)
     message(STATUS "Using Qt ${Qt5_VERSION}")
-    set(QT_LIBS Qt5::Core Qt5::Gui Qt5::Widgets)
+    set(QT_LIBS Qt5::Core Qt5::Gui Qt5::Widgets Qt5::PrintSupport)
 endif()
 
 # OpenGL (still needed for SurfaceView & SliceView)
@@ -109,6 +109,7 @@ set(SOURCES
     src/core/ROIVolume.cpp
     src/core/ROIAlgorithms.cpp
     src/core/SUV.cpp
+    src/core/Report.cpp
     src/gui/MainWindow.cpp
     src/gui/OrthoViewer.cpp
     src/gui/SliceView.cpp
@@ -128,6 +129,7 @@ set(HEADERS
     src/core/ROIVolume.h
     src/core/ROIAlgorithms.h
     src/core/SUV.h
+    src/core/Report.h
     src/gui/MainWindow.h
     src/gui/OrthoViewer.h
     src/gui/SliceView.h

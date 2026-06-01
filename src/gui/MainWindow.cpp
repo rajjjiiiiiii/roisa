@@ -8,13 +8,19 @@
 #include "SettingsDialog.h"
 #include "../core/ROIAlgorithms.h"
 #include "../core/SUV.h"
+#include "../core/Report.h"
 
+#include <QBuffer>
 #include <QDir>
+#include <QFile>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QMimeData>
+#include <QPrinter>
 #include <QProgressBar>
+#include <QTextDocument>
 #include <QThread>
+#include <QUrl>
 #include <fstream>
 #include <memory>
 #include <set>
@@ -318,6 +324,9 @@ void MainWindow::buildMenus()
     fileMenu->addAction(screenshotAct);
     auto* exportLabelsAct = new QAction("Export Labels (NIfTI)…", this);
     fileMenu->addAction(exportLabelsAct);
+    auto* reportAct = new QAction("Generate Report (PDF/HTML)…", this);
+    reportAct->setShortcut(QKeySequence("Ctrl+R"));
+    fileMenu->addAction(reportAct);
     fileMenu->addSeparator();
 
     auto* prefsAct = new QAction("Preferences…", this);
@@ -332,6 +341,7 @@ void MainWindow::buildMenus()
     connect(openAct,  &QAction::triggered, this, &MainWindow::openImage);
     connect(dicomAct, &QAction::triggered, this, &MainWindow::openDicom);
     connect(exportLabelsAct, &QAction::triggered, this, &MainWindow::onExportLabels);
+    connect(reportAct, &QAction::triggered, this, &MainWindow::onGenerateReport);
     connect(prefsAct, &QAction::triggered, this, &MainWindow::onSettings);
     connect(screenshotAct, &QAction::triggered, this, [this]{
         QString fn = QFileDialog::getSaveFileName(this, "Save Screenshot", "roisa_screenshot.png",
@@ -1063,4 +1073,70 @@ void MainWindow::onSettings()
     SettingsDialog dlg(this);
     if (dlg.exec() == QDialog::Accepted)
         m_toolPanel->applyPreferences(dlg.brushRadius(), dlg.colormap(), dlg.halfLifeS());
+}
+
+void MainWindow::onGenerateReport()
+{
+    ROIVolume* ref = refVol();
+    if (!ref || !ref->isLoaded()) { statusBar()->showMessage("Load an image first."); return; }
+    QString path = QFileDialog::getSaveFileName(this, "Save report",
+        "roisa_report.pdf", "PDF (*.pdf);;HTML (*.html)");
+    if (path.isEmpty()) return;
+
+    std::vector<std::pair<QString,QString>> info = {
+        {"Name", QFileInfo(m_volNames[0]).fileName()},
+        {"Dimensions", QString("%1 × %2 × %3 voxels").arg(ref->nx()).arg(ref->ny()).arg(ref->nz())},
+        {"Spacing", QString("%1 mm (isotropic)").arg(ref->voxelSpacingMm(), 0, 'f', 3)},
+        {"Window", QString("%1 … %2").arg(ref->vmin(), 0, 'f', 1).arg(ref->vmax(), 0, 'f', 1)},
+    };
+
+    const std::pair<QString,QPixmap> shots[] = {
+        {"Sagittal", m_viewer->grabSagittal()},
+        {"Coronal",  m_viewer->grabCoronal()},
+        {"Axial",    m_viewer->grabAxial()},
+        {"3-D",      m_viewer->grabVtk()},
+    };
+
+    std::vector<QStringList> stats;
+    for (const auto& s : ref->computeAllStats())
+        stats.push_back({ QString::number(s.label), QString::number(s.voxelCount),
+                          QString::number(s.volumeMm3, 'f', 1),
+                          QString::number(s.meanIntensity, 'f', 2),
+                          QString::number(s.stdIntensity, 'f', 2) });
+
+    std::vector<QStringList> suv;
+    for (const auto& d : m_toolPanel->quantResults())
+        suv.push_back({ QString::number(d.label), QString::number(d.volumeMl, 'f', 3),
+                        QString::number(d.suvMean, 'f', 2), QString::number(d.suvMax, 'f', 2),
+                        QString::number(d.suvPeak, 'f', 2), QString::number(d.tlg, 'f', 2) });
+
+    const QStringList meas = m_viewer->measurements();
+
+    if (path.endsWith(".pdf", Qt::CaseInsensitive)) {
+        QTextDocument doc;
+        std::vector<std::pair<QString,QString>> imgs;
+        for (int i = 0; i < 4; ++i) {
+            const QString name = QString("shot%1").arg(i);
+            doc.addResource(QTextDocument::ImageResource, QUrl(name),
+                            shots[i].second.toImage());
+            imgs.push_back({shots[i].first, name});
+        }
+        doc.setHtml(Report::buildHtml("ROISA Report", info, imgs, stats, suv, meas));
+        QPrinter printer(QPrinter::HighResolution);
+        printer.setOutputFormat(QPrinter::PdfFormat);
+        printer.setOutputFileName(path);
+        doc.print(&printer);
+    } else {
+        std::vector<std::pair<QString,QString>> imgs;
+        for (int i = 0; i < 4; ++i) {
+            QByteArray ba; QBuffer buf(&ba); buf.open(QIODevice::WriteOnly);
+            shots[i].second.save(&buf, "PNG");
+            imgs.push_back({shots[i].first,
+                            "data:image/png;base64," + QString::fromLatin1(ba.toBase64())});
+        }
+        QString html = Report::buildHtml("ROISA Report", info, imgs, stats, suv, meas);
+        QFile f(path);
+        if (f.open(QIODevice::WriteOnly | QIODevice::Text)) { f.write(html.toUtf8()); f.close(); }
+    }
+    statusBar()->showMessage("Report saved: " + QFileInfo(path).fileName());
 }

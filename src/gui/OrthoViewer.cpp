@@ -347,6 +347,17 @@ void OrthoViewer::setPreviewBuffer(const uint8_t* buf)
     m_axiView->setPreviewBuffer(buf);
 }
 
+QStringList OrthoViewer::measurements() const
+{
+    QStringList out;
+    const std::pair<const char*, SliceView*> views[] = {
+        {"Sagittal", m_sagView}, {"Coronal", m_corView}, {"Axial", m_axiView}};
+    for (const auto& v : views)
+        for (const auto& m : v.second->measurements())
+            out << (QString(v.first) + ": " + m);
+    return out;
+}
+
 void OrthoViewer::setMeasureMode(int mode)
 {
     auto m = static_cast<SliceView::MeasureMode>(mode);

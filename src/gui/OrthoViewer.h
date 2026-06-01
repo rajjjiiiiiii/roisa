@@ -64,6 +64,7 @@ public:
     // Measurement overlay controls (0=None,1=Ruler,2=Angle,3=Circle)
     void setMeasureMode(int mode);
     void clearMeasurements();
+    QStringList measurements() const;
 
     // Display option passthroughs to slice views
     void setInterpolate(bool on);

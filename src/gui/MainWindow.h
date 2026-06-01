@@ -55,6 +55,7 @@ private slots:
     // I/O & workflow
     void onExportLabels();
     void onSettings();
+    void onGenerateReport();
 
 private:
     // ── Multi-image state ─────────────────────────────────────────────────────
