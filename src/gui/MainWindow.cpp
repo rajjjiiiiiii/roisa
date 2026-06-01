@@ -253,6 +253,19 @@ MainWindow::MainWindow(QWidget* parent)
         rebuildFusion();
     });
 
+    connect(m_toolPanel, &ToolPanel::flipRequested, this,
+            [this](int movingIdx, int axis){
+        if (movingIdx < 1 || movingIdx >= (int)m_volumes.size()) return;
+        static const char* kName[] = {"L/R", "A/P", "H/F"};
+        const QString nm = (axis >= 0 && axis < 3) ? kName[axis] : "?";
+        if (m_volumes[movingIdx]->flipAxis(axis)) {
+            m_toolPanel->setRegStatus(QString("IN%1 flipped %2.").arg(movingIdx).arg(nm));
+            rebuildFusion();
+        } else {
+            m_toolPanel->setRegStatus(QString("Could not flip IN%1.").arg(movingIdx));
+        }
+    });
+
     connect(m_toolPanel, &ToolPanel::saveTransformRequested, this, [this](int idx){
         if (idx < 1 || idx >= (int)m_volumes.size()) return;
         QString p = QFileDialog::getSaveFileName(this, "Save transform",
@@ -452,14 +465,15 @@ void MainWindow::buildMenus()
 
     viewMenu->addSeparator();
     auto* layoutMenu = viewMenu->addMenu("Layout");
-    static const struct { const char* name; const char* key; } LAYOUT_ITEMS[5] = {
+    static const struct { const char* name; const char* key; } LAYOUT_ITEMS[6] = {
         {"2×2  (VTK | Sag / Cor | Axi)",        "1"},
         {"1+3  (Large Axial + three small)",     "2"},
         {"3-up  (Sag | Cor | Axi)",              "3"},
         {"Axial only",                            "4"},
         {"3D only",                               "5"},
+        {"1×4  (Sag | Cor | Axi | 3D)",          "6"},
     };
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 6; ++i) {
         auto* a = new QAction(LAYOUT_ITEMS[i].name, this);
         a->setShortcut(QKeySequence(QString("Ctrl+%1").arg(LAYOUT_ITEMS[i].key)));
         layoutMenu->addAction(a);

@@ -53,14 +53,15 @@ OrthoViewer::OrthoViewer(QWidget* parent)
     tbL->setContentsMargins(3, 3, 3, 3);
     tbL->setSpacing(3);
 
-    static const struct { const char* label; const char* tip; } PRESETS[5] = {
+    static const struct { const char* label; const char* tip; } PRESETS[6] = {
         {"2×2",  "Four equal panels  (VTK | Sag / Cor | Axi)"},
         {"1+3",  "Large Axial + three small panels  (Sag / Cor / VTK)"},
         {"3-up", "Three slices side-by-side  (Sag | Cor | Axi)"},
         {"Axi",  "Axial view only"},
         {"3D",   "3-D VTK view only"},
+        {"1×4",  "All four panels in a row  (Sag | Cor | Axi | 3D)"},
     };
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 6; ++i) {
         auto* btn = new QPushButton(PRESETS[i].label, toolbar);
         btn->setToolTip(PRESETS[i].tip);
         btn->setCheckable(true);
@@ -184,13 +185,23 @@ void OrthoViewer::applyLayoutPreset(int preset)
         styleSplitter(root);
         break;
     }
+    case 5: {
+        // 1×4 — all four panels in a row: Sag | Cor | Axi | 3D
+        root = new QSplitter(Qt::Horizontal);
+        root->addWidget(m_sagView);
+        root->addWidget(m_corView);
+        root->addWidget(m_axiView);
+        root->addWidget(m_vtkView);
+        styleSplitter(root);
+        break;
+    }
     }
 
     m_currentSplitter = root;
     m_viewContainerLayout->addWidget(root);
 
     // Update toolbar button states
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < 6; ++i)
         if (m_presetBtns[i]) m_presetBtns[i]->setChecked(i == preset);
 
     m_currentPreset = preset;

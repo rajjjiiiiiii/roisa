@@ -134,7 +134,7 @@ private:
     QVBoxLayout* m_viewContainerLayout{nullptr};
     QSplitter*   m_currentSplitter{nullptr};
     int          m_currentPreset{0};
-    QPushButton* m_presetBtns[5]{};
+    QPushButton* m_presetBtns[6]{};
 
     void applyLayoutPreset(int preset);
     void updateCrosshairs();

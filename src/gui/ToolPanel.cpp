@@ -616,6 +616,29 @@ QGroupBox* ToolPanel::buildManualRegGroup()
         if (m_regMovingCombo && m_regMovingCombo->count() > 0)
             emit resetRegistrationRequested(m_regMovingCombo->currentData().toInt());
     });
+
+    // ── Orientation flips for the selected moving image ───────────────────────
+    l->addWidget(new QLabel("Flip moving image:"));
+    auto* frow = new QHBoxLayout;
+    auto* flipLR = new QPushButton("L / R");
+    auto* flipAP = new QPushButton("A / P");
+    auto* flipHF = new QPushButton("H / F");
+    flipLR->setToolTip("Mirror left ↔ right (X axis)");
+    flipAP->setToolTip("Mirror anterior ↔ posterior (Y axis)");
+    flipHF->setToolTip("Mirror head ↔ feet (Z axis)");
+    frow->addWidget(flipLR); frow->addWidget(flipAP); frow->addWidget(flipHF);
+    l->addLayout(frow);
+
+    auto emitFlip = [this](int axis){
+        if (!m_regMovingCombo || m_regMovingCombo->count() == 0) {
+            setRegStatus("Select a moving input first.");
+            return;
+        }
+        emit flipRequested(m_regMovingCombo->currentData().toInt(), axis);
+    };
+    connect(flipLR, &QPushButton::clicked, this, [emitFlip]{ emitFlip(0); });
+    connect(flipAP, &QPushButton::clicked, this, [emitFlip]{ emitFlip(1); });
+    connect(flipHF, &QPushButton::clicked, this, [emitFlip]{ emitFlip(2); });
     return gb;
 }
 

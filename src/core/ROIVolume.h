@@ -171,6 +171,10 @@ public:
                               double tx, double ty, double tz,
                               double rxDeg, double ryDeg, double rzDeg);
 
+    /// Mirror the moving image about its centre along a physical axis
+    /// (0 = X/LR, 1 = Y/AP, 2 = Z/HF). Toggles; resetRegistration() restores.
+    bool flipAxis(int axis);
+
     /// Restore the original (pre-registration) display image.
     bool resetRegistration();
     bool isRegistered() const { return static_cast<bool>(m_displayBackup); }

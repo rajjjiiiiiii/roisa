@@ -1381,3 +1381,39 @@ bool ROIVolume::resetRegistration()
     notifyChange();
     return true;
 }
+
+bool ROIVolume::flipAxis(int axis)
+{
+    // Mirror the moving image about its centre along a physical axis:
+    // axis 0 = X (L/R) · 1 = Y (A/P) · 2 = Z (H/F), assuming LPS orientation.
+    // Each call toggles that flip; resetRegistration() restores the original.
+    if (!m_displayImg || axis < 0 || axis > 2) return false;
+    try {
+        if (!m_displayBackup) m_displayBackup = m_displayImg;
+        RegPtr cur = m_displayImg;          // flip current image in its own frame
+
+        using Affine = itk::AffineTransform<double, 3>;
+        auto a = Affine::New();
+
+        auto size = cur->GetLargestPossibleRegion().GetSize();
+        itk::ContinuousIndex<double,3> cidx;
+        cidx[0] = (size[0]-1)/2.0; cidx[1] = (size[1]-1)/2.0; cidx[2] = (size[2]-1)/2.0;
+        Affine::InputPointType center;
+        cur->TransformContinuousIndexToPhysicalPoint(cidx, center);
+        a->SetCenter(center);
+
+        Affine::MatrixType m; m.SetIdentity();
+        m[axis][axis] = -1.0;               // reflection along the chosen axis
+        a->SetMatrix(m);
+
+        m_displayImg = resampleByTransform(cur, cur, a);
+        m_mask = createMask(m_displayImg);
+        m_history.clear();
+        notifyChange();
+        return true;
+    }
+    catch (const std::exception& ex) {
+        std::cerr << "flipAxis error: " << ex.what() << "\n";
+        return false;
+    }
+}

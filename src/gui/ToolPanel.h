@@ -90,6 +90,7 @@ signals:
     void manualTransformRequested(int movingIdx, double tx, double ty, double tz,
                                   double rx, double ry, double rz);
     void resetRegistrationRequested(int movingIdx);
+    void flipRequested(int movingIdx, int axis);   // axis 0=X/LR,1=Y/AP,2=Z/HF
     void saveTransformRequested(int movingIdx);
     void loadTransformRequested(int movingIdx);
     // Quantification operator (activityIdx: 0=REF, 1+=inputs)
