@@ -16,6 +16,7 @@ class QComboBox;    class QSpinBox;      class QDoubleSpinBox;
 class QCheckBox;    class QSlider;       class QPushButton;
 class QLineEdit;    class QLabel;        class QStackedWidget;
 class QGroupBox;    class QTableWidget;  class QTabWidget;
+class QButtonGroup;
 class HistogramWidget;
 class DicomTagWidget;
 class TacWidget;
@@ -146,8 +147,10 @@ private:
     int  m_seedX{0}, m_seedY{0}, m_seedZ{0};
     bool m_seedSet{false};
 
-    // ── Operator selector ─────────────────────────────────────────────────────
-    QComboBox*      m_operatorCombo{nullptr};
+    // ── Operator selector (segmented buttons — every module always visible) ───
+    int             m_currentOp{0};
+    QPushButton*    m_opBtns[5]{};
+    QButtonGroup*   m_opGroup{nullptr};
     QStackedWidget* m_operatorStack{nullptr};
 
     // ── Paint tab — Tool & Label ───────────────────────────────────────────────

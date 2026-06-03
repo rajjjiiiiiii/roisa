@@ -151,14 +151,16 @@ MainWindow::MainWindow(QWidget* parent)
     dockLayout->setSpacing(0);
     dockLayout->addWidget(m_imageList);
     dockLayout->addWidget(scroll, 1);
-    dockBody->setMinimumWidth(310);
-    dockBody->setMaximumWidth(360);
+    // Min only — no max, so the dock can be widened on demand and closed to
+    // give the viewer the whole window (fixes "cramped panel" / "viewer room").
+    dockBody->setMinimumWidth(300);
 
-    auto* dock = new QDockWidget("Controls", this);
-    dock->setWidget(dockBody);
-    dock->setAllowedAreas(Qt::RightDockWidgetArea);
-    dock->setFeatures(QDockWidget::DockWidgetMovable);
-    addDockWidget(Qt::RightDockWidgetArea, dock);
+    m_controlsDock = new QDockWidget("Controls", this);
+    m_controlsDock->setWidget(dockBody);
+    m_controlsDock->setAllowedAreas(Qt::RightDockWidgetArea);
+    m_controlsDock->setFeatures(QDockWidget::DockWidgetMovable |
+                                QDockWidget::DockWidgetClosable);
+    addDockWidget(Qt::RightDockWidgetArea, m_controlsDock);
 
     // ── ImageListWidget signals ────────────────────────────────────────────
     connect(m_imageList, &ImageListWidget::activateRequested,
@@ -577,33 +579,42 @@ void MainWindow::buildToolbars()
     // ── Top action toolbar (global file/workflow verbs) ───────────────────────
     auto* top = new QToolBar("Actions", this);
     top->setMovable(false);
-    top->setIconSize(QSize(18, 18));
-    top->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    top->setIconSize(QSize(20, 20));
+    // Icon-only keeps the bar compact; every action has a descriptive tooltip.
+    top->setToolButtonStyle(Qt::ToolButtonIconOnly);
     addToolBar(Qt::TopToolBarArea, top);
 
     auto addAct = [&](QStyle::StandardPixmap sp, const QString& text,
-                      auto slot, const QString& sc = QString()) -> QAction* {
+                      auto slot, const QString& sc = QString(),
+                      const QString& tip = QString()) -> QAction* {
         auto* a = new QAction(st->standardIcon(sp), text, this);
         connect(a, &QAction::triggered, this, slot);
         if (!sc.isEmpty()) a->setShortcut(QKeySequence(sc));
-        a->setToolTip(text);
+        a->setToolTip(tip.isEmpty() ? text : tip);
         top->addAction(a);
         return a;
     };
 
-    addAct(QStyle::SP_DialogOpenButton, "Open", &MainWindow::openImage, "Ctrl+O");
-    addAct(QStyle::SP_DirOpenIcon,      "DICOM", &MainWindow::openDicom);
+    addAct(QStyle::SP_DialogOpenButton, "Open", &MainWindow::openImage, "Ctrl+O",
+           "Open reference image (NIfTI / image)");
+    addAct(QStyle::SP_DirIcon,          "DICOM", &MainWindow::openDicom, QString(),
+           "Open DICOM series…");
     top->addSeparator();
-    addAct(QStyle::SP_DialogSaveButton, "Save Session", &MainWindow::onSaveSession, "Ctrl+S");
-    addAct(QStyle::SP_DialogOpenButton, "Load Session", &MainWindow::onLoadSession);
-    addAct(QStyle::SP_FileIcon,         "Export Labels", &MainWindow::onExportLabels);
+    addAct(QStyle::SP_DialogSaveButton, "Save Session", &MainWindow::onSaveSession, "Ctrl+S",
+           "Save session…");
+    addAct(QStyle::SP_DirOpenIcon,      "Load Session", &MainWindow::onLoadSession, QString(),
+           "Load session…");
+    addAct(QStyle::SP_FileIcon,         "Export Labels", &MainWindow::onExportLabels, QString(),
+           "Export labels (NIfTI)…");
     top->addSeparator();
-    addAct(QStyle::SP_ArrowBack,        "Undo", &MainWindow::doUndo, "Ctrl+Z");
-    addAct(QStyle::SP_FileDialogContentsView, "Report", &MainWindow::onGenerateReport, "Ctrl+R");
+    addAct(QStyle::SP_ArrowBack,        "Undo", &MainWindow::doUndo, "Ctrl+Z", "Undo (Z)");
+    addAct(QStyle::SP_FileDialogContentsView, "Report", &MainWindow::onGenerateReport, "Ctrl+R",
+           "Generate report (PDF / HTML)…");
     {
         auto* shot = new QAction(st->standardIcon(QStyle::SP_DialogApplyButton),
                                  "Snapshot", this);
         shot->setShortcut(QKeySequence("Ctrl+Shift+S"));
+        shot->setToolTip("Save viewer snapshot…");
         connect(shot, &QAction::triggered, this, [this]{
             QString fn = QFileDialog::getSaveFileName(this, "Save Screenshot",
                           "roisa_screenshot.png", "PNG (*.png);;JPEG (*.jpg *.jpeg)");
@@ -615,7 +626,16 @@ void MainWindow::buildToolbars()
         top->addAction(shot);
     }
     top->addSeparator();
-    addAct(QStyle::SP_FileDialogDetailedView, "Preferences", &MainWindow::onSettings, "Ctrl+,");
+    addAct(QStyle::SP_FileDialogDetailedView, "Preferences", &MainWindow::onSettings, "Ctrl+,",
+           "Preferences…");
+    // Panel show/hide — gives the viewer the whole window (F9)
+    if (m_controlsDock) {
+        QAction* panelToggle = m_controlsDock->toggleViewAction();
+        panelToggle->setIcon(st->standardIcon(QStyle::SP_FileDialogListView));
+        panelToggle->setShortcut(QKeySequence("F9"));
+        panelToggle->setToolTip("Show / hide the control panel  (F9)");
+        top->addAction(panelToggle);
+    }
 
     // spacer pushes the status header to the right edge
     auto* spacer = new QWidget(top);
@@ -629,11 +649,12 @@ void MainWindow::buildToolbars()
     // ── Left tool rail (interaction tools, always visible) ────────────────────
     auto* rail = new QToolBar("Tools", this);
     rail->setMovable(false);
-    rail->setIconSize(QSize(28, 28));
+    rail->setIconSize(QSize(24, 24));
     rail->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
     rail->setStyleSheet(
-        "QToolBar{background:#141414;border-right:1px solid #2a2a2a;spacing:2px;}"
-        "QToolButton{color:#9aa;font-size:9px;padding:4px 2px;border-radius:4px;}"
+        "QToolBar{background:#141414;border-right:1px solid #2a2a2a;spacing:1px;}"
+        "QToolButton{color:#9aa;font-size:8px;padding:3px 1px;border-radius:4px;"
+        "  min-width:38px;}"
         "QToolButton:hover{background:#222;}"
         "QToolButton:checked{background:#1c3550;color:#cfe2f0;}");
     addToolBar(Qt::LeftToolBarArea, rail);

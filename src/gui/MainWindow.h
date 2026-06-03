@@ -21,6 +21,7 @@ class QAction;
 class QActionGroup;
 class QProgressBar;
 class QLabel;
+class QDockWidget;
 
 class MainWindow : public QMainWindow
 {
@@ -112,6 +113,7 @@ private:
     QActionGroup*            m_toolGroup{nullptr};
     QHash<QString, QAction*> m_toolActs;
     QLabel*                  m_statusHeader{nullptr};
+    QDockWidget*             m_controlsDock{nullptr};
 
     void afterLoad();
     void addRecentFile(const QString& path);

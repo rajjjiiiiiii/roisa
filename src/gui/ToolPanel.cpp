@@ -17,6 +17,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QButtonGroup>
 #include <QComboBox>
 #include <QDir>
 #include <QDoubleSpinBox>
@@ -73,31 +74,35 @@ static QScrollArea* makeTabPage(std::initializer_list<QGroupBox*> groups)
 
 ToolPanel::ToolPanel(QWidget* parent) : QWidget(parent)
 {
-    setMinimumWidth(280); setMaximumWidth(340);
+    // Min only — the max is removed so the user can widen the panel by dragging
+    // the dock edge (fixes the "cramped panel" complaint).
+    setMinimumWidth(300);
     auto* ml = new QVBoxLayout(this);
-    ml->setContentsMargins(2, 2, 2, 2);
-    ml->setSpacing(4);
+    ml->setContentsMargins(3, 3, 3, 3);
+    ml->setSpacing(5);
 
-    // ── Operator selector drop-down ───────────────────────────────────────────
-    m_operatorCombo = new QComboBox(this);
-    m_operatorCombo->addItems({"Navigation Viewer", "ROI", "Registration",
-                               "Measure", "Quantification"});
-    m_operatorCombo->setStyleSheet(
-        "QComboBox{"
-        "  background:#1c2a38; color:#9fcfe8; font-weight:bold; font-size:12px;"
-        "  padding:5px 10px; border:1px solid #2e5070; border-radius:4px;"
-        "}"
-        "QComboBox::drop-down{ border:none; width:20px; }"
-        "QComboBox QAbstractItemView{"
-        "  background:#1c2a38; color:#9fcfe8;"
-        "  selection-background-color:#2a5070;"
-        "}");
-    ml->addWidget(m_operatorCombo);
-
-    auto* sep = new QFrame(this);
-    sep->setFrameShape(QFrame::HLine);
-    sep->setStyleSheet("border: 1px solid #2a3a4a;");
-    ml->addWidget(sep);
+    // ── Module selector (segmented buttons — every module always visible) ─────
+    auto* seg = new QWidget(this);
+    seg->setStyleSheet(
+        "QPushButton{background:#1c2a38;color:#8fb6cc;font-weight:bold;"
+        "font-size:11px;border:1px solid #2e5070;border-radius:4px;padding:5px 2px;}"
+        "QPushButton:hover{background:#24384a;color:#bfe0f0;}"
+        "QPushButton:checked{background:#2f6da0;color:#fff;border:1px solid #4a9fd8;}");
+    auto* segL = new QHBoxLayout(seg);
+    segL->setContentsMargins(0, 0, 0, 0); segL->setSpacing(2);
+    m_opGroup = new QButtonGroup(this); m_opGroup->setExclusive(true);
+    static const struct { const char* s; const char* full; } MODS[5] = {
+        {"Nav",  "Navigation Viewer"}, {"ROI",  "ROI / Segmentation"},
+        {"Reg",  "Registration"},      {"Meas", "Measure"},
+        {"Quant","Quantification"} };
+    for (int i = 0; i < 5; ++i) {
+        auto* b = new QPushButton(MODS[i].s, seg);
+        b->setCheckable(true); b->setToolTip(MODS[i].full); b->setMinimumHeight(28);
+        connect(b, &QPushButton::clicked, this, [this, i]{ setOperator(i); });
+        segL->addWidget(b); m_opGroup->addButton(b, i); m_opBtns[i] = b;
+    }
+    m_opBtns[0]->setChecked(true);
+    ml->addWidget(seg);
 
     // ── Operator page stack ───────────────────────────────────────────────────
     m_operatorStack = new QStackedWidget(this);
@@ -107,9 +112,6 @@ ToolPanel::ToolPanel(QWidget* parent) : QWidget(parent)
     m_operatorStack->addWidget(buildMeasureOperator());     // 3
     m_operatorStack->addWidget(buildQuantOperator());       // 4
     ml->addWidget(m_operatorStack, 1);
-
-    connect(m_operatorCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &ToolPanel::onOperatorChanged);
 
     // ── Status bar ────────────────────────────────────────────────────────────
     m_statusLabel = new QLabel(this);
@@ -1438,13 +1440,11 @@ double  ToolPanel::brushTolerance() const { return m_smartTol     ? m_smartTol->
 
 QString ToolPanel::toolMode() const
 {
-    if (m_operatorCombo) {
-        const int op = m_operatorCombo->currentIndex();
-        if (op == 0) return "";          // Navigation Viewer — no painting
-        if (op == 2) return "";          // Registration — no painting
-        if (op == 3) return "measure";   // Measure operator
-        if (op == 4) return "";          // Quantification — no painting
-    }
+    const int op = m_currentOp;
+    if (op == 0) return "";          // Navigation Viewer — no painting
+    if (op == 2) return "";          // Registration — no painting
+    if (op == 3) return "measure";   // Measure operator
+    if (op == 4) return "";          // Quantification — no painting
     // ROI operator (index 1) — derive from tool combo
     return m_toolCombo ? m_toolCombo->currentText().toLower() : "paint";
 }
@@ -1502,7 +1502,7 @@ void ToolPanel::onToolModeChanged(int /*idx*/)
 void ToolPanel::onMeasureTypeChanged(int idx)
 {
     // Only apply when Measure operator is active
-    if (m_operatorCombo && m_operatorCombo->currentIndex() == 3 && m_viewer)
+    if (m_currentOp == 3 && m_viewer)
         m_viewer->setMeasureMode(idx + 1);   // 0=None, 1=Ruler, 2=Angle, 3=Circle
 }
 
@@ -1623,13 +1623,18 @@ void ToolPanel::setToolByName(const QString& name)
 
 void ToolPanel::setOperator(int idx)
 {
-    if (m_operatorCombo && idx >= 0 && idx < m_operatorCombo->count())
-        m_operatorCombo->setCurrentIndex(idx);
+    if (idx < 0 || idx >= 5) return;
+    if (m_opBtns[idx] && !m_opBtns[idx]->isChecked())
+        m_opBtns[idx]->setChecked(true);       // exclusive group unchecks the rest
+    if (idx != m_currentOp) {
+        m_currentOp = idx;
+        onOperatorChanged(idx);
+    }
 }
 
 int ToolPanel::currentOperator() const
 {
-    return m_operatorCombo ? m_operatorCombo->currentIndex() : 0;
+    return m_currentOp;
 }
 
 void ToolPanel::bumpBrush(int delta)
