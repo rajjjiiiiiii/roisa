@@ -108,26 +108,38 @@ class ToolPanel(QWidget):
         self._seed    = (0, 0, 0)
         self._seed_set = False
 
-        self.setMinimumWidth(280); self.setMaximumWidth(340)
+        # Min only — the max is removed so the user can widen the panel by
+        # dragging the splitter (fixes the "cramped panel" complaint).
+        self.setMinimumWidth(300)
         ml = QVBoxLayout(self)
-        ml.setContentsMargins(2, 2, 2, 2); ml.setSpacing(4)
+        ml.setContentsMargins(3, 3, 3, 3); ml.setSpacing(5)
 
-        # ── Operator drop-down ────────────────────────────────────────────────
-        self._op_combo = QComboBox()
-        self._op_combo.addItems(["Navigation Viewer", "ROI", "Registration",
-                                 "Measure", "Quantification"])
-        self._op_combo.setStyleSheet(
-            "QComboBox{background:#1c2a38;color:#9fcfe8;font-weight:bold;"
-            "font-size:12px;padding:5px 10px;border:1px solid #2e5070;"
-            "border-radius:4px;}"
-            "QComboBox::drop-down{border:none;width:20px;}"
-            "QComboBox QAbstractItemView{background:#1c2a38;color:#9fcfe8;"
-            "selection-background-color:#2a5070;}")
-        ml.addWidget(self._op_combo)
-
-        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("border:1px solid #2a3a4a;")
-        ml.addWidget(sep)
+        # ── Module selector (segmented buttons — every module always visible) ──
+        from PyQt6.QtWidgets import QButtonGroup
+        self._current_op = 0
+        self._op_btns: list[QPushButton] = []
+        self._op_group = QButtonGroup(self); self._op_group.setExclusive(True)
+        seg = QWidget()
+        seg.setStyleSheet(
+            "QPushButton{background:#1c2a38;color:#8fb6cc;font-weight:bold;"
+            "font-size:11px;border:1px solid #2e5070;border-radius:4px;"
+            "padding:5px 2px;}"
+            "QPushButton:hover{background:#24384a;color:#bfe0f0;}"
+            "QPushButton:checked{background:#2f6da0;color:#fff;"
+            "border:1px solid #4a9fd8;}")
+        seg_l = QHBoxLayout(seg)
+        seg_l.setContentsMargins(0, 0, 0, 0); seg_l.setSpacing(2)
+        for i, (short, full) in enumerate(
+                [("Nav", "Navigation Viewer"), ("ROI", "ROI / Segmentation"),
+                 ("Reg", "Registration"), ("Meas", "Measure"),
+                 ("Quant", "Quantification")]):
+            b = QPushButton(short); b.setCheckable(True); b.setToolTip(full)
+            b.setMinimumHeight(28)
+            b.clicked.connect(lambda _c, idx=i: self.setOperator(idx))
+            seg_l.addWidget(b)
+            self._op_group.addButton(b, i); self._op_btns.append(b)
+        self._op_btns[0].setChecked(True)
+        ml.addWidget(seg)
 
         # ── Operator stack ────────────────────────────────────────────────────
         self._op_stack = QStackedWidget()
@@ -137,8 +149,6 @@ class ToolPanel(QWidget):
         self._op_stack.addWidget(self._build_measure_op())
         self._op_stack.addWidget(self._build_quant_op())
         ml.addWidget(self._op_stack, 1)
-
-        self._op_combo.currentIndexChanged.connect(self._on_op_changed)
 
         # ── Status label ──────────────────────────────────────────────────────
         self._status = QLabel()
@@ -946,12 +956,17 @@ class ToolPanel(QWidget):
             self._tool_combo.setCurrentIndex(idx)
 
     def setOperator(self, idx: int) -> None:
-        """Switch the right-panel module (operator) programmatically."""
-        if hasattr(self, "_op_combo") and 0 <= idx < self._op_combo.count():
-            self._op_combo.setCurrentIndex(idx)
+        """Switch the right-panel module (operator) — segmented-bar aware."""
+        if not (0 <= idx < len(self._op_btns)):
+            return
+        if not self._op_btns[idx].isChecked():
+            self._op_btns[idx].setChecked(True)   # exclusive group unchecks rest
+        if idx != self._current_op:
+            self._current_op = idx
+            self._on_op_changed(idx)
 
     def currentOperator(self) -> int:
-        return self._op_combo.currentIndex() if hasattr(self, "_op_combo") else 0
+        return self._current_op
 
     def bumpBrush(self, delta: int) -> None:
         if hasattr(self, "_brush_radius"):
@@ -1274,7 +1289,7 @@ class ToolPanel(QWidget):
         return self._label_combo.currentData() if hasattr(self, '_label_combo') else 1
 
     def toolMode(self) -> str:
-        op = self._op_combo.currentIndex() if hasattr(self, '_op_combo') else 1
+        op = getattr(self, '_current_op', 1)
         if op == 0: return ""        # Navigation Viewer
         if op == 2: return ""        # Registration — no painting
         if op == 3: return "measure" # Measure
@@ -1357,7 +1372,7 @@ class ToolPanel(QWidget):
         self.toolModeChanged.emit(self.toolMode())
 
     def _on_meas_type_changed(self, idx: int) -> None:
-        if self._op_combo.currentIndex() == 3 and self._viewer:
+        if self._current_op == 3 and self._viewer:
             self._viewer.setMeasureMode(idx + 1)
 
     def _on_nav_x(self, v: int) -> None:

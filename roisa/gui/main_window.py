@@ -71,24 +71,31 @@ class MainWindow(QMainWindow):
         self._panel  = ToolPanel(self)
         self._image_list = ImageListWidget()
 
-        # Right panel: image list on top, tool panel below
-        panel_container = QWidget(self)
-        panel_container.setMinimumWidth(310)
-        panel_container.setMaximumWidth(360)
-        pc_layout = QVBoxLayout(panel_container)
+        # Right panel: image list on top, tool panel below.
+        # No max width — the splitter lets the user widen it on demand, and it
+        # can be collapsed entirely to give the viewer the whole window.
+        self._panel_container = QWidget(self)
+        self._panel_container.setMinimumWidth(300)
+        pc_layout = QVBoxLayout(self._panel_container)
         pc_layout.setContentsMargins(0, 0, 0, 0)
         pc_layout.setSpacing(0)
         pc_layout.addWidget(self._image_list)
         pc_layout.addWidget(self._panel, 1)
 
         # ── Central splitter ──────────────────────────────────────────────────
-        splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        splitter.addWidget(self._viewer)
-        splitter.addWidget(panel_container)
-        splitter.setSizes([1050, 340])
-        splitter.setHandleWidth(4)
-        splitter.setStyleSheet("QSplitter::handle{background:#2a2a2a;}")
-        self.setCentralWidget(splitter)
+        self._splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self._splitter.addWidget(self._viewer)
+        self._splitter.addWidget(self._panel_container)
+        self._splitter.setStretchFactor(0, 1)     # viewer takes extra space
+        self._splitter.setStretchFactor(1, 0)
+        self._splitter.setCollapsible(0, False)    # never collapse the viewer
+        self._splitter.setCollapsible(1, True)     # panel may collapse away
+        self._splitter.setSizes([1120, 320])       # default favours the viewer
+        self._splitter.setHandleWidth(6)
+        self._splitter.setStyleSheet(
+            "QSplitter::handle{background:#2a2a2a;}"
+            "QSplitter::handle:hover{background:#3f7fb0;}")
+        self.setCentralWidget(self._splitter)
 
         # ── Seed image list ────────────────────────────────────────────────────
         self._image_list.add_image("(none)", is_ref=True)
@@ -747,8 +754,9 @@ class MainWindow(QMainWindow):
         # ── Top action toolbar (global file/workflow verbs) ───────────────────
         top = QToolBar("Actions", self)
         top.setMovable(False)
-        top.setIconSize(QSize(18, 18))
-        top.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        top.setIconSize(QSize(20, 20))
+        # Icon-only keeps the bar compact; every action has a descriptive tooltip.
+        top.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, top)
 
         def act(icon_sp, text, slot, shortcut=None, tip=None):
@@ -762,18 +770,34 @@ class MainWindow(QMainWindow):
         top.addAction(act(SP.SP_DialogOpenButton,  "Open",     self._on_open, "Ctrl+O",
                           "Open reference image (DICOM / NIfTI)"))
         top.addAction(act(SP.SP_FileDialogNewFolder, "+ Image", self._on_add_image, None,
-                          "Add an input/overlay image"))
+                          "Add an input / overlay image"))
         top.addSeparator()
-        top.addAction(act(SP.SP_DialogSaveButton,  "Save Session", self._on_save_session, "Ctrl+S"))
-        top.addAction(act(SP.SP_DialogOpenButton,  "Load Session", self._on_load_session))
-        top.addAction(act(SP.SP_FileIcon,          "Export Labels", self._on_export_labels))
+        top.addAction(act(SP.SP_DialogSaveButton,  "Save Session", self._on_save_session, "Ctrl+S",
+                          "Save session…"))
+        top.addAction(act(SP.SP_DirOpenIcon,       "Load Session", self._on_load_session,
+                          None, "Load session…"))
+        top.addAction(act(SP.SP_FileIcon,          "Export Labels", self._on_export_labels,
+                          None, "Export labels (NIfTI)…"))
         top.addSeparator()
-        self._undo_act = act(SP.SP_ArrowBack, "Undo", self._do_undo, "Ctrl+Z")
+        self._undo_act = act(SP.SP_ArrowBack, "Undo", self._do_undo, "Ctrl+Z", "Undo (Z)")
         top.addAction(self._undo_act)
-        top.addAction(act(SP.SP_FileDialogContentsView, "Report", self._on_generate_report, "Ctrl+R"))
-        top.addAction(act(SP.SP_DialogApplyButton, "Snapshot", self._on_screenshot, "Ctrl+Shift+S"))
+        top.addAction(act(SP.SP_FileDialogContentsView, "Report", self._on_generate_report,
+                          "Ctrl+R", "Generate report (PDF / HTML)…"))
+        top.addAction(act(SP.SP_DialogApplyButton, "Snapshot", self._on_screenshot,
+                          "Ctrl+Shift+S", "Save viewer snapshot…"))
         top.addSeparator()
-        top.addAction(act(SP.SP_FileDialogDetailedView, "Preferences", self._on_settings, "Ctrl+,"))
+        top.addAction(act(SP.SP_FileDialogDetailedView, "Preferences", self._on_settings,
+                          "Ctrl+,", "Preferences…"))
+        # Panel show/hide — gives the viewer the whole window
+        self._panel_toggle = QAction(
+            style.standardIcon(SP.SP_FileDialogListView), "Panel", self)
+        self._panel_toggle.setCheckable(True)
+        self._panel_toggle.setChecked(True)
+        self._panel_toggle.setShortcut(QKeySequence("F9"))
+        self._panel_toggle.setToolTip("Show / hide the control panel  (F9)")
+        self._panel_toggle.toggled.connect(
+            lambda on: self._panel_container.setVisible(on))
+        top.addAction(self._panel_toggle)
 
         # spacer pushes the status header to the right edge
         from PyQt6.QtWidgets import QSizePolicy
@@ -789,11 +813,12 @@ class MainWindow(QMainWindow):
         # ── Left tool rail (interaction tools, always visible) ────────────────
         rail = QToolBar("Tools", self)
         rail.setMovable(False)
-        rail.setIconSize(QSize(28, 28))
+        rail.setIconSize(QSize(24, 24))
         rail.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
         rail.setStyleSheet(
-            "QToolBar{background:#141414;border-right:1px solid #2a2a2a;spacing:2px;}"
-            "QToolButton{color:#9aa;font-size:9px;padding:4px 2px;border-radius:4px;}"
+            "QToolBar{background:#141414;border-right:1px solid #2a2a2a;spacing:1px;}"
+            "QToolButton{color:#9aa;font-size:8px;padding:3px 1px;border-radius:4px;"
+            "  min-width:38px;}"
             "QToolButton:hover{background:#222;}"
             "QToolButton:checked{background:#1c3550;color:#cfe2f0;}")
         self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, rail)
